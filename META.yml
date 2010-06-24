@@ -1,0 +1,23 @@
+--- #YAML:1.0
+name:                WWW-Analytics-MultiTouch
+version:             0.02
+abstract:            Multi-touch web analytics, using Google Analytics
+license:             perl
+author:              
+    - Jon Schutz <jon at jschutz.net>
+generated_by:        ExtUtils::MakeMaker version 6.42
+distribution_type:   module
+requires:     
+    Data::Dumper:                  0
+    DateTime:                      0
+    DateTime::Duration:            0
+    Getopt::Long:                  0
+    List::Util:                    0
+    Net::Google::Analytics:        0
+    Net::Google::AuthSub:          0
+    Params::Validate:              0
+    Pod::Usage:                    0
+    Test::More:                    0
+meta-spec:
+    url:     http://module-build.sourceforge.net/META-spec-v1.3.html
+    version: 1.3
