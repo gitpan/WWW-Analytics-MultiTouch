@@ -4,12 +4,6 @@ Makefile.PL
 README
 lib/WWW/Analytics/MultiTouch.pm
 lib/WWW/Analytics/MultiTouch/Tabular.pm
-bin/multitouch_report.pl
 t/00-load.t
 t/multitouch.t
-t/tabular.t
-t/txt-expected.txt
-t/csv-expected.csv
-examples/demo.conf
-META.yml                                 Module YAML meta-data (added by MakeMaker)
-META.json                                Module JSON meta-data (added by MakeMaker)
+META.yml                                 Module meta-data (added by MakeMaker)
