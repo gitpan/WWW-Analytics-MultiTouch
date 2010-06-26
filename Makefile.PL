@@ -22,7 +22,11 @@ WriteMakefile(
 	'List::Util' => 0,
 	'Pod::Usage' => 0,
 	'Getopt::Long' => 0,
-
+	'Text::Table' => 0,
+	'Text::CSV_XS' => 0,
+	'Spreadsheet::WriteExcel' => 0,
+	'IO::File' => 0,
+	'Class::Accessor::Fast' => 0,
     },
     dist                => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
     clean               => { FILES => 'WWW-Analytics-MultiTouch-*' },

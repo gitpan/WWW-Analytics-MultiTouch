@@ -1,5 +1,9 @@
 Revision history for WWW-Analytics-MultiTouch
 
-0.01    Date/time
-        First version, released on an unsuspecting world.
+0.01    2010-06-23
+        First version.
+0.02	2010-06-23
+	Added missing file bin/multitouch_report.pl
+0.03	2010-06-26
+	Added missing dependencies to Makefile.PL
 

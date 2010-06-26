@@ -11,7 +11,7 @@ use List::Util qw/sum/;
 
 use WWW::Analytics::MultiTouch::Tabular;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 
 sub new {
