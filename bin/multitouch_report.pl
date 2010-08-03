@@ -6,10 +6,12 @@ use warnings;
 use WWW::Analytics::MultiTouch;
 use Getopt::Long;
 use Pod::Usage;
+use Config::General qw/ParseConfig/;
+use Hash::Merge qw/merge/;
 
-my %opts;
+my $opts = {};
 
-GetOptions(\%opts,
+GetOptions($opts,
 	   'user=s',
 	   'pass=s',
 	   'id=s',
@@ -24,16 +26,50 @@ GetOptions(\%opts,
 	   'single_order_model',
 	   'channel_pattern=s',
 	   'filename=s',
-	   'all_touches!',
-	   'distributed_touches!',
-	   'transactions!',
+	   'all_touches_report!',
+	   'even_touches_report!',
+	   'distributed_touches_report!',
+	   'first_touch_report!',
+	   'last_touch_report!',
+	   'fifty_fifty_report!',
+	   'transactions_report!',
+	   'touchlist_report!',
+	   'transaction_distribution_report!',
+	   'channel_overlap_report!',
 	   'format=s',
-	   'title=s',
+	   'conf=s',
+	   'bugfix1', # swap src/medium for organic, no public releases affected
 	   'help|?',
     ) or pod2usage(2);
-pod2usage(1) if $opts{help};
+pod2usage(1) if $opts->{help};
 
-WWW::Analytics::MultiTouch->process(\%opts);
+if (my $conf_file = delete $opts->{conf}) {
+    my %file_opts = ParseConfig(-ConfigFile => $conf_file, 
+				-AutoTrue => 1, 
+				-SplitPolicy => 'equalsign',
+				-UTF8 => 1);
+    Hash::Merge::set_behavior('RIGHT_PRECEDENT');
+    _fix_array_keys(\%file_opts, 'column_formats');
+
+    $opts = merge($opts, \%file_opts);
+}
+
+#use Data::Dumper; print Dumper($opts); exit;
+WWW::Analytics::MultiTouch->process($opts);
+
+sub _fix_array_keys {
+    my $hash = shift;
+    my $key = shift;
+    if (exists($hash->{$key}) && ref($hash->{$key}) ne 'ARRAY') {
+	$hash->{$key} = [ $hash->{$key} ];
+    }
+    for my $v (values %$hash) {
+	if (ref($v) eq 'HASH') {
+	    _fix_array_keys($v, $key);
+	}
+    }
+}
+	
 
 __END__
 
@@ -69,17 +105,18 @@ Name of file in which to save reports.  If not specified, output is sent to the
 screen.  The filename extension, if given, is used to determine the file format,
 which can be xls, csv or txt.
 
+=item * --conf=FILENAME
+
+Specifies the name of a configuration file, through which any command line
+option can be specified, as well as many more advanced options.  See L<CONFIGURATION FILE>.
+
 =back
 
 =head2 REPORT OPTIONS
 
 =over 4
 
-=item * title
-
-Title to insert into reports.
-
-=item * all_touches
+=item * --all_touches_report
 
 If set, the generated report includes the all-touches report; enabled by
 default.  The all-touches report shows, for each channel, the total number of
@@ -88,16 +125,47 @@ Since multiple channels may have contributed to each transaction, the total of
 all transactions across all channels will exceed the actual number of
 transactions.
 
-=item * distributed_touches
+=item * --even_touches_report
+
+If set, the generated report includes the even-touches report; enabled by
+default.  The even-touches report shows, for each channel, a number of
+transactions and revenue amount evenly distributed between the participating
+channels.  For example, if Channel A has 3 touches and Channel B 2 touches, half
+of the revenue/transactions will be allocated to Channel A and half to Channel
+B.  Since each individual transaction is evenly distributed across the
+contributing channels, the total of all transactions (revenue) across all
+channels will equal the actual number of transactions (revenue).
+
+=item * --distributed_touches_report
 
 If set, the generated report includes the distributed-touches report; enabled by
 default.  The distributed-touches report shows, for each channel, a number of
 transactions and revenue amount in proportion to the number of touches for that
-channel.  Since each individual transaction is distributed across the
+channel.  For example, if Channel A has 3 touches and Channel B 2 touches, 60%
+(3/5) of the revenue/transactions will be allocated to Channel A and 40% (2/5)
+to Channel B. Since each individual transaction is distributed across the
 contributing channels, the total of all transactions (revenue) across all
 channels will equal the actual number of transactions (revenue).
 
-=item * transactions
+=item * --first_touch_report
+
+If set, the generated report includes the first-touch report; enabled by
+default.  The first-touch report allocates transactions and revenue to the
+channel that received the first touch within the analysis window.
+
+=item * --last_touch_report
+
+If set, the generated report includes the last-touch report; enabled by
+default.  The last-touch report allocates transactions and revenue to the
+channel that received the last touch prior to the transaction.
+
+=item * --fifty_fifty_report
+
+If set, the generated report includes the fifty-fifty report; enabled by
+default.  The fifty-fifty report allocates transactions and revenue equally
+between first touch and last touch contributors.
+
+=item * --transactions
 
 If set, the generated report includes transactions report; enabled by default.
 The transactions report lists each transaction and the channels that contributed
@@ -162,7 +230,118 @@ the associated javascript library has been customised.
 
 Enable debug output.
 
+=item * --conf=FILENAME
+
+Specify a configuration file from which to read options, including advanced templating options.
+
 =back
+
+=head1 CONFIGURATION FILE
+
+A configuration file can be used to store any of the command line options, plus
+advanced options that control the type and layout of the reports.
+
+The file format is L<Config::General>, per the following example:
+
+  user = mygoogleusername@mydomain.com
+  pass = *******
+  id = 5555555
+  ga_timezone = -1300
+  report_timezone = UTC
+
+  channel_pattern = med-subcat
+
+  <column_heading_format>
+    bold = 1
+    color = white
+    bg_color = red
+    right_color = white
+    right = 1
+  </column_heading_format>
+
+  <row_heading_format>
+    bold = 1
+    bg_color = gray
+  </row_heading_format>
+
+  <header_layout>
+    hide_gridlines = 2
+    <image>
+      row = 1
+      col = 0
+      filename = MyLogo.png
+    </image>
+    <header>
+      row = 5
+      col = 0
+      colspan = 5
+      text = Multi Touch Reporting
+      <cell_format>
+        align = center
+        bold = 1
+        bg_color = red
+        color = white
+        size = 16
+      </cell_format>
+    </header>
+    <header>
+      row = 7
+      col = 0
+      text = Generation Date:
+      text = Report Type:
+      text = Date Range:
+      text = Analysis Window:
+      <cell_format>
+        align = right
+        bold = 1
+      </cell_format>
+    </header>
+    <header>
+      row = 7
+      col = 1
+      text = @generation_date
+      text = @title
+      text = @start_date - @end_date
+      text = @window_length days
+    </header>
+
+    start_row = 10
+  </header_layout>
+
+  <channel_map>
+    (none)-(none) = Direct
+    organic-(none) = Organic
+    cpc-(none) = CPC
+    email-(none) = Email
+    referral-(none) = Referral
+  </channel_map>
+
+The configuration file contains a global section and may contain a report-specific section for each report.  Options from the report-specific section are merged with the global options before use.
+
+For every type of report in the command-line options, (all_touches_report,
+first_touch_report, transactions_report, etc), the report-specific section has a
+corresponding name, e.g. 'all_touches', 'first_touch', 'transactions'.  For example, 
+
+  <all_touches>
+    title = Channel Contribution
+    <title_format>
+      bold = 1
+    </title_format>
+    sheetname = Channel Contribution
+    <heading_map>
+      Transactions = Contributed Transactions
+      Revenue = Contributed Revenue
+    </heading_map>
+    <column_formats>
+      bg_color = white
+    </column_formats>
+  </all_touches>
+
+
+The options in the configuration file are the same as those described under
+L<WWW::Analytics::MultiTouch/process>.  An example configuration file can be
+found in the examples directory of this distribution.
+
 
 =head1 RELATED INFORMATION
 

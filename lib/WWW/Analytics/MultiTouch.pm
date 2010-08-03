@@ -6,13 +6,48 @@ use Net::Google::Analytics;
 use Net::Google::AuthSub;
 use DateTime;
 use Data::Dumper;
-use Params::Validate;
-use List::Util qw/sum/;
+use Params::Validate qw(:all);
+use List::Util qw/sum max/;
+use List::MoreUtils qw/part/;
+use Hash::Merge qw/merge/;
 
 use WWW::Analytics::MultiTouch::Tabular;
 
-our $VERSION = '0.03';
+our $VERSION = '0.06';
 
+my $default_header_colour = { bold => 1,
+			      color => 'white',
+			      bg_color => 'gray',
+			      right => 'white',
+};
+my $default_column_formats = [ 
+    { bg_color => '#D0D0D0', },
+    { bg_color => '#E8E8E8', },
+];
+
+my $default_title_format = { bold => 1 };
+
+my $default_row__heading = { bold => 1 };
+
+my %formatting_params = (
+    title_format => { type => HASHREF,
+		      default => $default_title_format,
+    },
+    column_heading_format => { type => HASHREF, 
+			       default => $default_header_colour,
+    },
+    column_formats => { type => ARRAYREF, 
+			default => $default_column_formats,
+    },
+    row_heading_format => { type => HASHREF, 
+			    default => $default_row__heading,
+    },
+    heading_map => { type => HASHREF,
+		     default => {},
+    },
+    header_layout => 0,
+    footer_layout => 0,
+    );
 
 sub new {
     my $class = shift;
@@ -25,6 +60,14 @@ sub new {
 				recsep => { default => '*' },
 				patsep => { default => '-' },
 				debug => { default => 0 },
+				bugfix1 => { default => 0 },
+				channel_map => { type => HASHREF,
+						     default => {} },
+				date_format => { default => '%d %b %Y' },
+				time_format => { default => '%Y-%m-%d %H:%M:%S' },
+				ga_timezone => { default => 'UTC' },
+				report_timezone => { default => 'UTC' },
+				revenue_scale => { default => 1 },
 			  });
     my $self = bless \%params, ref $class || $class;
 
@@ -54,43 +97,53 @@ sub get_data {
     $req->sort('ga:eventAction');
     $req->filters('ga:eventCategory==' . $self->{event_category});
 
-    my $start_date = _to_date_time($params{start_date});
-    my $end_date = _to_date_time($params{end_date});
-
+    my $start_date = _to_date_time($params{start_date}, $self->{report_timezone});
+    my $end_date = _to_date_time($params{end_date}, $self->{report_timezone})->add(days => 1);
+    my $date = $start_date->clone;
     my %data;
-    while (DateTime->compare($start_date, $end_date) <= 0) {
-	my $ymd = $start_date->ymd('-');
-	$self->_debug("Processing $ymd\n");
-	$req->start_date($ymd);
-	$req->end_date($ymd);
-	my $res = $data_feed->retrieve($req);
+    while (DateTime->compare($date, $end_date) <= 0) {
+	my $ymd = $date->ymd('-');
+	my $ga_ymd = $date->clone->set_time_zone($self->{ga_timezone})->ymd('-');
+	$self->_debug("Processing $ga_ymd\n");
+	$req->start_date($ga_ymd);
+	$req->end_date($ga_ymd);
+	my $res = $data_feed->retrieve_paged($req);
 	die $res->message unless $res->is_success;
 	for my $entry (@{$res->entries}) {
 	    my $metrics = $entry->metrics;
 	    my $dims = $entry->dimensions;
 	    my %names = map { $dims->[$_]->name => $_ } (0 .. @$dims - 1);
-	    $data{$dims->[$names{'ga:eventAction'}]->value} = [ $ymd, $self->_split_events($dims->[$names{'ga:eventLabel'}]->value) ];
+	    my @events = $self->_split_events($dims->[$names{'ga:eventLabel'}]->value);
+
+	    # Keep event if within reporting time range (not GA time range)
+	    my $t = DateTime->from_epoch(epoch => $events[0][3])->set_time_zone($self->{report_timezone});
+	    if ($start_date <= $t && $t < $end_date) {
+		$data{$dims->[$names{'ga:eventAction'}]->value} = [ $ymd, @events ];
+	    }
 	}
-	$start_date->add(days => 1);
+	$date->add(days => 1);
     }
 
     $self->{current_data} = { start_date => $start_date,
-			      end_date => $end_date,
+			      end_date => $end_date->subtract(days => 1),
 			      transactions => \%data,
     };
 }
 
 sub _to_date_time {
     my $date = shift;
-    
+    my $tz = shift || 'UTC';
+
     if ($date) {
 	my ($y, $m, $d) = ( $date =~ m/^(\d{4})-?(\d{2})-?(\d{2})/ );
 	die "Invalid date format: $date\n" if ! defined $d;
-	return DateTime->new(year => $y, month => $m, day => $d);
+	return DateTime->new(year => $y, month => $m, day => $d, time_zone => $tz);
     }
-    return DateTime->today;
+    return DateTime->now->set_time_zone($tz)->truncate(to => 'day');
 }
 
+# Splits event label into array of [ source, medium, subcat, time ]
+# or for orders, [ __ORD, TID, revenue, time ]
 sub _split_events {
     my ($self, $events) = @_;
 
@@ -100,6 +153,13 @@ sub _split_events {
     my @events = split(/\Q$rs\E/, $events);
     my @rec = map { [ split(/\Q$fs\E/, $_) ] } @events;
 
+    if ($self->{bugfix1}) {
+	for (@rec) {
+	    if ($_->[0] eq 'organic' && $_->[1] ne 'organic') {
+		my $tmp = $_->[1]; $_->[1] = $_->[0]; $_->[0] = $tmp;
+	    }
+	}
+    }
     return @rec;
 }
 
@@ -109,13 +169,22 @@ sub summarise {
     my %params = validate(@_, { window_length =>  { default => 45 },
 				single_order_model => 0,
 				channel_pattern => { default => join($self->{patsep}, qw/source med subcat/) },
+				channel => 0,
 			  });
     my $patsubst = $self->_compile_channel_pattern($params{channel_pattern});
     my $dt = $params{window_length} * 24 * 3600;
 
     my %distr_touches;
+    my %even_touches;
     my %all_touches;
     my @trans;
+    my @touchlist;
+    my %transdist;
+    my %transdistoverall;
+    my %firstlast;
+    my %overlap;
+    my %first_touch_channels = map { $_ => 1 } grep { $params{channel}{$_}{requires_first_touch} } keys %{$params{channel}};
+
     # Each event has category 'multitouch', action TIDtid, label ORDER*TOUCH*TOUCH...
     # Each order is of format __ORD!tid!rev!time
     # Each touch is of format source!medium!subcat!time
@@ -128,9 +197,16 @@ sub summarise {
 	    $self->_debug("Bad record for TID $tid: no __ORD. " . Dumper($rec));
 	    next;
 	}
+	my $rev = $self->_currency_conversion($order->[2]);
+
 	# Set window start based on browser timestamps
 	my $window_start = $order->[3] - $dt;
+
+	# Iterate through list of touches and summarise in %touches and @touchlist
 	my %touches;
+	push(@touchlist, []);
+	my $first_touch = 1;
+	my %seen_first_touch;
 	for my $entry (@$rec[2 .. @$rec - 1]) {
 	    if (@$entry != 4) {
 		$self->_debug("Bad record for TID $tid: invalid entry. " . Dumper($entry));
@@ -139,52 +215,211 @@ sub summarise {
 	    last if $entry->[3] < $window_start;
 	    if ($entry->[0] =~ m/__ORD/) {
 		last if $params{single_order_model};
+		unshift(@{$touchlist[-1]}, [ "ORDER($entry->[1])", $entry->[-1] ]);
 		next;
 	    }
-	    my $channel = join($self->{patsep}, map { $entry->[$_] || '(none)' } @$patsubst );
+	    if (my $channel = $self->_map_channel(join($self->{patsep}, map { $entry->[$_] || '(none)' } @$patsubst ))) {
+		if ($first_touch) {
+		    $first_touch = 0;
+		    $seen_first_touch{$channel}++;
+		}
 
-	    $touches{$channel}{count}++;
-	    $touches{$channel}{transactions} = 1;
-	    $touches{$channel}{revenue} = $self->_currency_conversion($order->[2]);
-
+		unless ($first_touch_channels{$channel} && !$seen_first_touch{$channel}) {
+		    $touches{$channel}{count}++;
+		    $touches{$channel}{transactions} = 1;
+		    $touches{$channel}{revenue} = $rev;
+		    unshift(@{$touchlist[-1]}, [ $channel, $entry->[-1] ]);
+		}
+	    }
 	}
+
+	# Summarise first/last touch attribution using @touchlist
+	if (@{$touchlist[-1]} > 0) {
+	    my $start = 0;
+	    my $end = @{$touchlist[-1]} - 1;
+	    my $firstchannel = $touchlist[-1][$start][0];
+	    my $lastchannel = $touchlist[-1][$end][0];
+
+	    while (defined($firstchannel) && $firstchannel =~ m/^ORDER\(/) {
+		$start++;
+		if ($start > $end) {
+		    $firstchannel = undef;
+		    last;
+		}
+		$firstchannel = $touchlist[-1][$start][0];
+	    }
+	    while (defined($lastchannel) && $lastchannel =~ m/^ORDER\(/) {
+		$end--;
+		if ($end <= $start) {
+		    $lastchannel = $firstchannel;
+		    last;
+		}
+		$lastchannel = $touchlist[-1][$end][0];
+	    }
+
+	    if (defined $firstchannel) {
+		$firstlast{'first'}{$firstchannel}{count}++;
+		$firstlast{'first'}{$firstchannel}{transactions}++;
+		$firstlast{'first'}{$firstchannel}{revenue} += $rev;
+		$firstlast{'last'}{$lastchannel}{count}++;
+		$firstlast{'last'}{$lastchannel}{transactions}++;
+		$firstlast{'last'}{$lastchannel}{revenue} += $rev;
+	    }
+
+	    # for hybrid, only count once if first/last channel are the same touch
+	    if ($end == $start) {
+		$lastchannel = undef;
+	    }
+	    # Attribute to first or last channel or both for hybrid
+	    my @channels;
+	    push(@channels, $firstchannel) if defined $firstchannel;
+	    push(@channels, $lastchannel) if defined $lastchannel; 
+	    if (@channels) {
+		my $scale = 1/@channels;
+		for my $channel (@channels) {
+		    $firstlast{hybrid}{$channel}{count}++;
+		    $firstlast{hybrid}{$channel}{transactions} += $scale;
+		    $firstlast{hybrid}{$channel}{revenue} += $scale * $rev;
+		}
+	    }
+	}
+	# Finish off touchlist by attaching order details as prefix and last touch
+	push(@{$touchlist[-1]}, [ "ORDER($order->[1])", $order->[3] ]);
+	unshift(@{$touchlist[-1]}, $order->[1], $order->[2], $order->[3]); # order details prefix
+
+	# Summarise according to various attribution methods using %touches
 	if (scalar keys %touches > 0) {
 	    for my $sum (qw/count transactions revenue/) {
 		$all_touches{$_}{$sum} += $touches{$_}{$sum} for keys %touches;
 	    }
 	    # normalise
+	    my %touches_norm;
 	    my $touches_total = sum(map { $touches{$_}{count} } keys %touches);
 	    for my $sum (qw/transactions revenue/) {
-		$touches{$_}{$sum} = $touches{$_}{$sum} * $touches{$_}{count} / $touches_total for keys %touches;
+		$touches_norm{$_}{$sum} = $touches{$_}{$sum} * $touches{$_}{count} / $touches_total for keys %touches;
 	    }
-	    for my $sum (qw/count transactions revenue/) {
-		$distr_touches{$_}{$sum} += $touches{$_}{$sum} for keys %touches;
+	    for (keys %touches) {
+		my $c = $touches{$_}{count};
+		$touches_norm{$_}{count} += $c;
+		$distr_touches{$_}{count} += $c;
+		$even_touches{$_}{count} += $c;
+	    }
+	    my $scale = 1 / (scalar keys %touches);
+	    for my $sum (qw/transactions revenue/) {
+		$distr_touches{$_}{$sum} += $touches_norm{$_}{$sum} for keys %touches;
+		$even_touches{$_}{$sum} += $touches{$_}{$sum} * $scale  for keys %touches;
 	    }
 	    push(@trans, { tid => $order->[1], 
 			   timestamp => $order->[3], 
 			   date => $rec->[0],
 			   rev => $order->[2], 
-			   touches => \%touches }); 
-	}
+			   touches => \%touches_norm }); 
+	    # distribution of touches by number of conversions
+	    $transdist{$touches{$_}{count}}{$_}++ for keys %touches;
+	    $transdistoverall{sum(map { $touches{$_}{count}} keys %touches)}++;
 
+	    my $key = join('+', sort keys %touches);
+	    $overlap{joint}{$key}{transactions}++;
+	    $overlap{joint}{$key}{revenue} += $rev;
+	    $overlap{joint}{$key}{touches} += $touches_total;
+	    $key = scalar keys %touches;
+	    $overlap{count}{$key}{transactions}++;
+	    $overlap{count}{$key}{revenue} += $rev;
+	    $overlap{count}{$key}{touches} += $touches_total;
+
+	}
     }
+    @touchlist = sort { $a->[0] cmp $b->[0] } @touchlist;
     $self->{summary} = {
 	all_touches => \%all_touches,
 	distr_touches => \%distr_touches,
-	trans => \@trans };
+	even_touches => \%even_touches,
+	trans => \@trans,
+	touchlist => \@touchlist,
+	transdist => \%transdist,
+	transdistoverall => \%transdistoverall,
+	firstlast => \%firstlast,
+	overlap => \%overlap,
+	window_length => $params{window_length},
+    };
 
+}
+
+sub _map_channel {
+    my ($self, $channel) = @_;
+    return $channel if defined $self->{no_mappings};
+
+    if (! exists $self->{compiled_mappings}) {
+	if (scalar keys %{$self->{channel_map}} == 0) {
+	    $self->{no_mappings} = 1;
+	    return $channel;
+	}
+	$self->{compiled_mappings} = [];
+	for my $key (keys %{$self->{channel_map}}) {
+	    eval {
+	    if ($key =~ m{ ^/(.*)/$ }x) {
+		my $re = $1;
+		push(@{$self->{compiled_mappings}}, [ qr/$re/, $self->{channel_map}{$key} ]);
+	    }
+	    };
+	    if ($@) {
+		warn "Failed to compile channel mapping for $key: $@\n";
+	    }
+	}
+    }
+
+    if (exists $self->{channel_map}{$channel}) {
+	return $self->{channel_map}{$channel};
+    }
+
+    for my $match (@{$self->{compiled_mappings}}) {
+	return $match->[1] if $channel =~ $match->[0];
+    }
+    return $channel;
+}
+
+sub _map_header {
+    my ($header, $header_map) = @_;
+
+    return exists $header_map->{$header} ? $header_map->{$header} : $header;
 }
 
 sub report {
     my $self = shift;
-    my %params = validate(@_, { all_touches =>  { default => 1 },
-				distributed_touches =>  { default => 1 },
-				transactions => { default => 1 },
+    my %params = validate(@_, { all_touches_report =>  { default => 1 },
+				even_touches_report => { default => 1 },
+				distributed_touches_report =>  { default => 1 },
+				first_touch_report => { default => 1 },
+				last_touch_report => { default => 1 },
+				fifty_fifty_report => { default => 1 },
+				transactions_report => { default => 1 },
+				touchlist_report => { default => 1 },
+				transaction_distribution_report => { default => 1 },
+				channel_overlap_report => { default => 1 },
+
+				all_touches => 0,
+				even_touches => 0,
+				distributed_touches => 0,
+				first_touch => 0,
+				last_touch => 0,
+				fifty_fifty => 0,
+				transactions => 0,
+				touchlist => 0,
+				transaction_distribution => 0,
+				channel_overlap => 0,
+
+				report_order => { type => ARRAYREF,
+						  default => [ qw/all_touches even_touches distributed_touches first_touch last_touch fifty_fifty transactions touchlist transaction_distribution channel_overlap/ ],
+				},
 				filename => 1,
 				'format' => 0,
 				title => 0,
+				column_heading_format => 0,
+				column_formats => 0,
+				header_layout => 0,
+				footer_layout => 0,
+				heading_map => 0,
 			  });
-
     if ($params{filename} =~ m/\.(xls|txt|csv)$/i) {
 	$params{'format'} = lc($1);
     }
@@ -193,53 +428,195 @@ sub report {
     }
 
     my @reports;
-    push(@reports, $self->all_touches_report( title => $params{title} )) if $params{all_touches};
-    push(@reports, $self->distributed_touches_report( title => $params{title} )) if $params{distributed_touches};
-    push(@reports, $self->transactions_report( title => $params{title} )) if $params{transactions};
-    my $output = WWW::Analytics::MultiTouch::Tabular->new({ 'format' => $params{'format'},
-							    outfile => $params{filename},
-							  });
+    my @report_options = (qw/title sheetname/, keys %formatting_params);
+
+    for my $report (@{$params{report_order}}) {
+	my $method = $report . '_report';
+	if (! $self->can($method)) {
+	    warn "Report type $report is not valid\n";
+	    next;
+	}
+	next unless $params{$method};
+	$self->_debug("Generating report '$report'\n");
+	push(@reports, 
+	     $self->$method(_opts_subset(_merge_params(\%params, $params{$report}),
+					 @report_options))) 
+    }
+    my $output = WWW::Analytics::MultiTouch::Tabular->new(_opts_subset(\%params,
+								       qw/format filename/));
     $output->print(\@reports);
     $output->close();
 }
 
-sub all_touches_report {
-    my $self = shift;
-    my %params = validate(@_, { title => { default => 'All Touches' } });
+sub _merge_params {
+    my $h1 = shift;
+    my $h2 = shift;
+    return $h1 unless ref($h2) eq 'HASH';
 
-    my @data;
-    my $summary = $self->{summary}{all_touches};
-    for my $channel (sort keys %{$summary}) {
-	push(@data, [ $channel, map { $summary->{$channel}{$_} } qw/count transactions revenue/ ]);
-    }
-    my %report = ( title => $params{title},
-		   sheetname => 'All Touches',
-		   headers => [ 'Channel', 'Touches', 'Transactions', 'Revenue' ],
-		   data => \@data,
-	);
-    return \%report;
+    Hash::Merge::set_behavior('RIGHT_PRECEDENT');
+    return merge($h1, $h2);
 }
 
+sub all_touches_report {
+    my $self = shift;
+    my %params = validate(@_, { title => { default => 'All Touches' },
+				sheetname => { default => 'All Touches' },
+ 				%formatting_params,
+			  });
+    $params{total_100} = 0;
+    $params{total_header} = 'ACTUAL TOTALS';
+
+    return $self->_touches_report(\%params, 
+				  $self->{summary}{all_touches},
+				  $self->{summary}{distr_touches});
+}
+
+sub even_touches_report {
+    my $self = shift;
+    my %params = validate(@_, { title => { default => 'Even Touches' },
+				sheetname => { default => 'Even Touches' },
+ 				%formatting_params,
+			  });
+
+    $params{total_100} = 1;
+    $params{total_header} = 'TOTAL';
+
+    return $self->_touches_report(\%params, 
+				  $self->{summary}{even_touches},
+				  $self->{summary}{even_touches});
+
+}
 sub distributed_touches_report {
     my $self = shift;
-    my %params = validate(@_, { title => { default => 'Distributed Touches' } });
+    my %params = validate(@_, { title => { default => 'Distributed Touches' },
+				sheetname => { default => 'Distributed Touches' },
+ 				%formatting_params,
+			  });
 
-    my @data;
-    my $summary = $self->{summary}{distr_touches};
-    for my $channel (sort keys %{$summary}) {
-	push(@data, [ $channel, map { $summary->{$channel}{$_} } qw/count transactions revenue/ ]);
+    $params{total_100} = 1;
+    $params{total_header} = 'TOTAL';
+
+    return $self->_touches_report(\%params, 
+				  $self->{summary}{distr_touches},
+				  $self->{summary}{distr_touches});
+
+}
+
+sub first_touch_report {
+    my $self = shift;
+    my %params = validate(@_, { title => { default => 'First Touch' },
+				sheetname => { default => 'First Touch' },
+ 				%formatting_params,
+			  });
+    $params{total_100} = 1;
+    $params{total_header} = 'TOTAL';
+
+    return $self->_touches_report(\%params, 
+				  $self->{summary}{firstlast}{'first'},
+				  $self->{summary}{firstlast}{'first'});
+
+}
+
+sub last_touch_report {
+    my $self = shift;
+    my %params = validate(@_, { title => { default => 'Last Touch' },
+				sheetname => { default => 'Last Touch' },
+ 				%formatting_params,
+			  });
+    $params{total_100} = 1;
+    $params{total_header} = 'TOTAL';
+
+    return $self->_touches_report(\%params, 
+				  $self->{summary}{firstlast}{'last'},
+				  $self->{summary}{firstlast}{'last'});
+
+}
+
+sub fifty_fifty_report {
+    my $self = shift;
+    my %params = validate(@_, { title => { default => '50/50 First-Last Touch' },
+				sheetname => { default => 'Fifty Fifty' },
+ 				%formatting_params,
+			  });
+    $params{total_100} = 1;
+    $params{total_header} = 'TOTAL';
+
+    return $self->_touches_report(\%params, 
+				  $self->{summary}{firstlast}{hybrid},
+				  $self->{summary}{distr_touches});
+
+}
+
+sub _touches_report {
+    my ($self, $params, $summary, $summary_for_total) = @_;
+
+     # Total based on distributed touches to get actual totals
+    my @totals;
+    my %totals;
+    for my $col (qw/count transactions revenue/) {
+	push(@totals, sum map { $summary_for_total->{$_}{$col} } keys %{$summary_for_total});
+	$totals{$col} = $totals[-1];
     }
-    my %report = ( title => $params{title},
-		   sheetname => 'Distributed Touches',
-		   headers => [ 'Channel', 'Touches', 'Transactions', 'Revenue' ],
+    if ($params->{total_100}) {
+	push(@totals, 100, 100); # % transactions, % revenue
+    }
+    else {
+	push(@totals, '', ''); # % transactions, % revenue
+    }
+    my @data;
+    for my $channel (sort keys %{$summary}) {
+	my $i = 0;
+	push(@data, [ [ $channel, $params->{row_heading_format} ],
+		      (map { [ $summary->{$channel}{$_}, $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/count transactions revenue/),
+		      (map { [ sprintf("%.2f", $summary->{$channel}{$_} / $totals{$_} * 100), $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/transactions revenue/),
+	     ]);
+    }
+
+    # sort by revenue, transactions descending
+    @data = sort { $b->[3][0] <=> $a->[3][0] || $b->[2][0] <=> $a->[2][0] } @data;
+
+    push(@data, [ map { [ $_, $params->{column_heading_format} ] } 
+		  _map_header($params->{total_header}, $params->{heading_map}), @totals ]);
+
+    my $i = 0;
+    my @heading = ('Channel', 'Touches', 'Transactions', 'Revenue', '% Transactions', '% Revenue');
+    my %report = ( title => [ $params->{title}, $params->{title_format} ],
+		   sheetname => $params->{sheetname},
+		   headings => [ map { [ _map_header($_, $params->{heading_map}), $params->{column_heading_format} ] } @heading ],
 		   data => \@data,
+		   chart => [ map { { type => 'pie',
+				      title => { name => $heading[$_],
+						 name_formula => [-1, $_],
+				      },
+				      abs_row => 20 * $i++,
+				      abs_col => 7,
+				      x_scale => 1,
+				      y_scale => 1,
+				      series => [ 
+					  { categories => [ 0, scalar @data - 2, 0, 0 ],
+					    values => [ 0, (scalar @data - 2), $_, $_ ],
+					    name_formula => [$_, 0],
+					    name => $data[$_][0][0],
+					  } ],
+		       } } (2, 3) ],
+		   start_date => $self->_format_date($self->{current_data}{start_date}),
+		   end_date => $self->_format_date($self->{current_data}{end_date}),
+		   generation_date => $self->_format_date(),
+		   window_length => $self->{summary}->{window_length},
+
 	);
+    
+    _add_layout(\%report, $params);
     return \%report;
+    
 }
 
 sub transactions_report {
     my $self = shift;
-    my %params = validate(@_, { title => { default => 'Transactions' } });
+    my %params = validate(@_, { title => { default => 'Transactions' },
+				sheetname => { default => 'Transactions' },
+ 				%formatting_params,
+			  });
 
     my @summary = sort { $a->{tid} cmp $b->{tid} } @{$self->{summary}{trans}};
     my %channels;
@@ -247,19 +624,230 @@ sub transactions_report {
 	$channels{$_}++ for keys %{$rec->{touches}};
     }
 
-    my @channels = sort keys %channels;
-    my @data = ( [ '', '', map { qw/Touches Transactions Revenue/ } @channels ] );
+    my @channels = sort { $channels{$b} <=> $channels{$a} } keys %channels;
+    my @data = ( [ map { [ _map_header($_, $params{heading_map}), $params{column_heading_format} ] } ('', '', map { qw/Touches Transactions Revenue/ } @channels )] );
+
+
     for my $rec (@summary) {
-	push(@data, [ $rec->{tid}, $rec->{'date'}, map { ($rec->{touches}{$_}{count} || '', $rec->{touches}{$_}{transactions} || '', $rec->{touches}{$_}{revenue} || '') } @channels ]);
+	my $i = 0;
+	push(@data, [ [ $rec->{tid}, $params{row_heading_format} ], 
+		      $rec->{'date'}, 
+		      map { my $cf = $params{column_formats}->[$i++ % @{$params{column_formats}}];
+			    ( [ $rec->{touches}{$_}{count} || '', $cf ],
+			      [ $rec->{touches}{$_}{transactions} || '', $cf ],
+			      [ $rec->{touches}{$_}{revenue} || '', $cf ] ) 
+		      } @channels ]);
     }
-    my %report = ( title => $params{title},
-		   sheetname => 'Transactions',
-		   headers => [ 'Transaction ID', 'Date', map { (' ', $_, ' ') } @channels ],
+
+    my %report = ( title => [ $params{title}, $params{title_format} ],
+		   sheetname => $params{sheetname},
+		   headings => [  map { [  _map_header($_, $params{heading_map}), $params{column_heading_format} ] } ('Transaction ID', 'Date', map { (' ', $_, ' ') } @channels) ],
 		   data => \@data,
+		   start_date => $self->_format_date($self->{current_data}{start_date}),
+		   end_date => $self->_format_date($self->{current_data}{end_date}),
+		   generation_date => $self->_format_date(),
+		   window_length => $self->{summary}->{window_length},
+
 	);
+
+    _add_layout(\%report, \%params);
     return \%report;
 }
 
+
+sub touchlist_report {
+    my $self = shift;
+
+    my %params = validate(@_, { title => { default => 'Touch List' },
+				sheetname => { default => 'Touch List' },
+ 				%formatting_params,
+			  });
+
+    my @data;
+    for my $touchlist (sort { $a->[0] cmp $b->[0] } @{$self->{summary}{touchlist}}) {
+	my $i = 0;
+	push(@data, [ 
+		 [ $touchlist->[0], $params{row_heading_format} ], #tid
+		 $self->_format_time($touchlist->[2]), # date
+		 $touchlist->[1], # revenue
+		 map { my $cf = $params{column_formats}->[$i++ % @{$params{column_formats}}];
+		       ( [ $_->[0], $cf ], [ $self->_format_time($_->[1]), $cf ] ) } @$touchlist[3 .. @$touchlist - 1]
+	     ]);
+    }
+    my $maxcols = max(map { 2 * ( @$_ - 3 ) } @{$self->{summary}{touchlist}});
+    
+    my %report = ( title => [ $params{title}, $params{title_format} ],
+		   sheetname => $params{sheetname},
+		   headings => [  map { [  _map_header($_, $params{heading_map}), $params{column_heading_format} ] } ('Transaction ID', 'Date', 'Revenue', 'Touches', ('') x $maxcols) ],
+		   data => \@data,
+		   start_date => $self->_format_date($self->{current_data}{start_date}),
+		   end_date => $self->_format_date($self->{current_data}{end_date}),
+		   generation_date => $self->_format_date(),
+		   window_length => $self->{summary}->{window_length},
+
+	);
+
+    _add_layout(\%report, \%params);
+    return \%report;
+}
+
+sub transaction_distribution_report {
+    my $self = shift;
+
+    my %params = validate(@_, { title => { default => 'Transaction Distribution' },
+				sheetname => { default => 'Transaction Distribution' },
+ 				%formatting_params,
+			  });
+
+    my $transdist = $self->{summary}{transdist};
+    my $transdistoverall = $self->{summary}{transdistoverall};
+
+    # find 95th percentile so last column contains remaining 5%
+    my @total;
+    my %channels;
+    my %bins = map { $_ => 1 } keys %$transdist;
+    $bins{$_}++ for keys %$transdistoverall;
+
+    for my $count (sort { $a <=> $b } keys %bins) {
+	push(@total, [ $count, ($transdistoverall->{$count} || 0) + (@total > 0 ? $total[-1][1] : 0) ]);
+	$channels{$_}++ for keys %{$transdist->{$count}};
+    }
+    my $main = \@total;
+    my $rest;
+    if (@total > 10) {
+	my $threshold = 0.95 * $total[-1][1];
+	my $i = 0;
+	($main, $rest) = part { $total[$i++][1] <= $threshold ? 0 : 1 } @total;
+    }
+    my @headings = ("No. of Touches", map { $_->[0] } @$main);
+    # create last roll-up heading
+    push(@headings, ">" . $main->[-1][0]) if $rest;
+    
+    my @data;
+    for my $channel ((sort keys %channels), 'OVERALL') {
+	my $i = 0;
+	push(@data, [ [ $channel, $params{row_heading_format} ],
+		      map { 
+			  my $cf = $params{column_formats}->[$i++ % @{$params{column_formats}}];
+			  [ ($channel eq 'OVERALL' ? $transdistoverall->{$_} : $transdist->{$_}{$channel}) || 0, $cf ] 
+		      } map { $_->[0] } @$main ]);
+	if ($rest) {
+	    # append a bin containing the sum of remaining values
+	    push(@{$data[-1]}, sum(map {  ($channel eq 'OVERALL' ? $transdistoverall->{$_->[0]} : $transdist->{$_->[0]}{$channel}) || 0 } @$rest));
+	}
+    }
+
+    my %report = ( title => [ $params{title}, $params{title_format} ],
+		   sheetname => $params{sheetname},
+		   headings => [  map { [  _map_header($_, $params{heading_map}), $params{column_heading_format} ] } @headings ],
+		   data => \@data,
+		   chart => [ { type => 'column',
+				x_scale => 1.5,
+				y_scale => 1.5,
+				series => [ map {
+				    { categories => [ -1, -1, 1, scalar @{$data[0]} ],
+				      values => [ $_, $_, 1, scalar @{$data[0]} ],
+				      name_formula => [$_, 0],
+				      name => $data[$_][0],
+				    } } (0 .. @data - 1) ]
+			      } ],
+		   start_date => $self->_format_date($self->{current_data}{start_date}),
+		   end_date => $self->_format_date($self->{current_data}{end_date}),
+		   generation_date => $self->_format_date(),
+		   window_length => $self->{summary}->{window_length},
+
+	);
+
+    _add_layout(\%report, \%params);
+    return \%report;
+    
+}
+
+sub channel_overlap_report {
+    my $self = shift;
+
+    my %params = validate(@_, { title => { default => 'Channel Overlap' },
+				sheetname => { default => 'Channel Overlap' },
+ 				%formatting_params,
+			  });
+    
+    my @data;
+    my @offsets; # row offsets into data array for each report
+
+    push(@offsets, scalar @data);
+    $self->_overlap_report(\%params, "Channel Count", 
+			   \@data, sub { $a->[0][0] <=> $b->[0][0] }, $self->{summary}{overlap}{count});
+    push(@data, [ ' ' ]);
+    push(@offsets, scalar @data);
+    $self->_overlap_report(\%params, "Channel Combination", 
+			   \@data, sub { $b->[6][0] <=> $a->[6][0] }, $self->{summary}{overlap}{joint});
+
+    push(@offsets, scalar @data);
+
+    my $i = 0;
+    my %report = ( title => [ $params{title}, $params{title_format} ],
+		   sheetname => $params{sheetname},
+		   data => \@data,
+		   chart => [ map { { type => 'pie',
+				      title => { name => $data[$offsets[$_]][0][0],
+						 name_formula => [$offsets[$_], 0],
+				      },
+				      abs_row => 20 * $i++,
+				      abs_col => 8,
+				      x_scale => 1,
+				      y_scale => 1,
+				      series => [ 
+					  { categories => [ $offsets[$_] + 1, $offsets[$_ + 1] - 1,
+							    0, 0 ],
+					    values => [ $offsets[$_] + 1, $offsets[$_ + 1] - 1, 1, 1 ],
+					    name_formula => [$offsets[$_] + 1, 0],
+					    name => $data[$offsets[$_]][0][0],
+					  } ],
+		       } } (0 .. 0) ], # just doing first pie, second is too busy
+		   start_date => $self->_format_date($self->{current_data}{start_date}),
+		   end_date => $self->_format_date($self->{current_data}{end_date}),
+		   generation_date => $self->_format_date(),
+		   window_length => $self->{summary}->{window_length},
+
+	);
+
+    _add_layout(\%report, \%params);
+    return \%report;
+}
+
+sub _overlap_report {
+    my ($self, $params, $heading1, $result, $comparator, $src) = @_;
+
+    push(@$result, [ map { [ _map_header($_, $params->{heading_map}), $params->{column_heading_format} ] } 
+		   ($heading1, 'Touches', 'Transactions', 'Revenue', '% Transactions', '% Revenue', 'Efficiency' ) ]);
+
+    my %totals;
+    for my $sum (qw/transactions revenue/) {
+	$totals{$sum} += $src->{$_}{$sum} for keys %$src;
+    }
+
+    my @data;
+    for my $row (keys %$src) {
+	my $i = 0;
+	push(@data, [ [ $row, $params->{row_heading_format} ],
+		       (map { [ $src->{$row}{$_}, $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/touches transactions revenue/),
+		       (map { [ sprintf("%.2f", $src->{$row}{$_} / $totals{$_} * 100), $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/transactions revenue/),
+		      [ sprintf("%.2f", $src->{$row}{transactions} / $src->{$row}{touches}) ]
+	     ]);
+    }
+    push(@$result, sort $comparator @data);
+}
+
+		       
+
+sub _add_layout {
+    my $report = shift;
+    my $params = shift;
+
+    for (qw/header_layout footer_layout/) {
+	$report->{$_} = $params->{$_} if defined $params->{$_};
+    }
+}
 
 sub _compile_channel_pattern {
     my ($self, $pat) = @_;
@@ -280,7 +868,7 @@ sub _compile_channel_pattern {
 
 sub _currency_conversion {
     my ($self, $dv) = @_;
-    return $dv if $dv =~ m/^[0-9.]+$/;
+    return $self->{revenue_scale} * $dv if $dv =~ m/^[0-9.]+$/;
 
     die "Currency conversion not implemented: rev = $dv\n";
 }
@@ -294,11 +882,18 @@ sub process {
     my $class = shift;
     my $opts = shift;
 
-    my $mt = $class->new(_opts_subset($opts, qw/user pass id event_category fieldsep recsep patsep debug/));
+    my $mt = $class->new(_opts_subset($opts, qw/user pass id event_category fieldsep recsep patsep debug bugfix1 channel_map date_format time_format ga_timezone report_timezone revenue_scale/));
 
     $mt->get_data(_opts_subset($opts, qw/start_date end_date/));
-    $mt->summarise(_opts_subset($opts, qw/window_length single_order_model channel_pattern/));
-    $mt->report(_opts_subset($opts, qw/all_touches distributed_touches transactions filename format title/));
+    $mt->summarise(_opts_subset($opts, qw/window_length single_order_model channel_pattern channel/));
+    $mt->report(_opts_subset($opts, qw/
+all_touches_report even_touches_report distributed_touches_report first_touch_report last_touch_report fifty_fifty_report 
+transactions_report touchlist_report transaction_distribution_report channel_overlap_report
+
+all_touches even_touches distributed_touches first_touch last_touch fifty_fifty 
+transactions touchlist transaction_distribution channel_overlap
+
+report_order filename format column_heading_format column_formats header_layout footer_layout heading_map/));
 }
 
 sub _opts_subset {
@@ -310,6 +905,24 @@ sub _opts_subset {
     }
 
     return %result;
+}
+
+sub _format_date {
+    my $self = shift;
+    my $date = shift || DateTime->now->set_time_zone($self->{report_timezone})->truncate(to => 'day');
+
+    return $date->strftime( $self->{date_format} );
+}
+
+sub _format_time {
+    my $self = shift;
+    my $t = shift;
+
+    return DateTime->from_epoch(epoch => $t)
+	->set_time_zone($self->{report_timezone})
+	->strftime( $self->{time_format} ) 
+	if defined $t;
+    return 'UNKNOWN';
 }
 
 =head1 NAME
@@ -363,7 +976,13 @@ had some contribution (sum of transactions > total transactions)
 =item * Summary of channels and fair attribution of transactions (sum of
 transactions = total transactions)
 
--item * List of each transaction and the contributing channels
+=item * First touch, last touch, fifty-fifty first/last touch, and even attribution of transactions.
+
+=item * Overlap analysis
+
+=item * Transaction/touch distribution
+
+=item * List of each transaction and the contributing channels
 
 =back
 
@@ -422,6 +1041,36 @@ The pattern separator for turning source, medium and subcategory information
 into a "channel" identifier.  See the C<channel_pattern> option under
 L<summarise> for more information.  Defaults to '-'.
 
+=item * channel_map
+
+This is a hashref of channel name (after applying C<channel_pattern>) that maps
+the extracted name to a more friendly name.  For example, if channel_pattern is
+'med-subcat', then direct traffic appears as '(none)-(none), organic traffic as
+organic-(none), etc.  An appropriate channel_map might be:
+
+    channel_map => {
+                      '(none)-(none)' => 'Direct',
+                      'organic-(none)' => 'Organic'
+                   }
+
+
+=item * date_format, time_format
+
+The format to be used for printing dates and times, respectively, using strftime
+patterns.  See L<DateTime/strftime Patterns> for details.  Defaults are '%d %b
+%Y' (e.g. 1 Jan 2010) and '%Y-%m-%d %H:%M:%S' (e.g. 2010-01-01 01:00:00).
+
+=item * ga_timezone, report_timezone
+
+Timezone used by Google Analytics, and timezone to be used in the reports,
+respectively.  May be specified either as an Olson DB time zone name
+("America/Chicago", "UTC") or an offset string ("+0600").  Default is UTC for both.
+
+=item * revenue_scale
+
+Scaling factor for revenue amounts.  Useful if, for example, you wish to display
+revenue in thousands of dollars instead of dollars.
+
 =item * debug
 
 Enable debug output.
@@ -441,7 +1090,8 @@ Options are:
 =item * start_date, end_date
 
 Start and end dates respectively.  The total interval includes both start and
-end dates.  Date format is YYYY-MM-DD or YYYYMMDD.
+end dates.  Date format is YYYY-MM-DD or YYYYMMDD.  (These dates are with
+respect to the report timezone).
 
 =back
 
@@ -481,6 +1131,20 @@ Arbitrary ordering is permissible, e.g. med-subcat-source.
 
 The default channel pattern is 'source-med-subcat'.
 
+=item * channel
+
+A hashref containing channel-specific options.  This is a mapping from channel
+name (the friendly name, given in the L<channel_map>) to option hash.
+
+Currently the only option is 'requires_first_touch' (boolean).  If set, a
+transaction will only be attributed to the channel if it received the first
+touch in the analysis window.  This is mainly used to correct for
+over-attribution to the direct channel.  Example:
+
+  {
+    Direct => { requires_first_touch => 1 }
+  }
+
 =back
 
 
@@ -490,7 +1154,86 @@ The default channel pattern is 'source-med-subcat'.
 
 Generate reports.
 
-Options are:
+=head3 Report Type Options
+
+=over 4
+
+=item * all_touches_report
+
+If set, the generated report includes the all-touches report; enabled by
+default.  The all-touches report shows, for each channel, the total number of
+transactions and the total revenue amount in which that channel played a role.
+Since multiple channels may have contributed to each transaction, the total of
+all transactions across all channels will exceed the actual number of
+transactions.
+
+=item * even_touches_report
+
+If set, the generated report includes the even-touches report; enabled by
+default.  The even-touches report shows, for each channel, a number of
+transactions and revenue amount evenly distributed between the participating
+channels.  For example, if Channel A has 3 touches and Channel B 2 touches, half
+of the revenue/transactions will be allocated to Channel A and half to Channel
+B.  Since each individual transaction is evenly distributed across the
+contributing channels, the total of all transactions (revenue) across all
+channels will equal the actual number of transactions (revenue).
+
+=item * distributed_touches_report
+
+If set, the generated report includes the distributed-touches report; enabled by
+default.  The distributed-touches report shows, for each channel, a number of
+transactions and revenue amount in proportion to the number of touches for that
+channel.  Since each individual transaction is distributed across the
+contributing channels, the total of all transactions (revenue) across all
+channels will equal the actual number of transactions (revenue).
+
+=item * first_touch_report
+
+If set, the generated report includes the first-touch report; enabled by
+default.  The first-touch report allocates transactions and revenue to the
+channel that received the first touch within the analysis window.
+
+=item * last_touch_report
+
+If set, the generated report includes the last-touch report; enabled by
+default.  The last-touch report allocates transactions and revenue to the
+channel that received the last touch prior to the transaction.
+
+=item * fifty_fifty_report
+
+If set, the generated report includes the fifty-fifty report; enabled by
+default.  The fifty-fifty report allocates transactions and revenue equally
+between first touch and last touch contributors.
+
+=item * transactions_report
+
+If set, the generated report includes the transactions report; enabled by default.
+The transactions report lists each transaction and the channels that contributed
+to it. 
+
+=item * touchlist_report
+
+If set, the generated report includes the touchlist report; enabled by default.
+The touchlist report lists the touches for each transaction in chronological
+order.  Note that this can be a very large amount of data compared to other reports.
+
+=item * transaction_distribution_report
+
+If set, the generated report includes the transaction distribution report;
+enabled by default.  The transaction distribution report shows the number of
+transactions that had one touch, two touches, etc, both by channel and as a
+total.
+
+=item * channel_overlap_report
+
+If set, the generated report includes the channel overlap report; enabled by
+default.  The channel overlap report shows the number of transactions that were
+touched by 1 channel, 2 channels, etc, and the number of transactions by channel
+combination.
+
+=back
+
+=head3 Report Output Options
 
 =over 4
 
@@ -503,38 +1246,85 @@ Name of file in which to save reports.  If not specified, output is sent to STDO
 May be set to xls, csv or txt to specify Excel, CSV and Text format output
 respectively.  The filename extension takes precedence over this parameter.
 
+=back
+
+=head3 Report Formatting Options
+
+=over 4
+
 =item * title
 
 Title to insert into reports.
 
-=item * all_touches
+=item * column_heading_format
 
-If set, the generated report includes the all-touches report; enabled by
-default.  The all-touches report shows, for each channel, the total number of
-transactions and the total revenue amount in which that channel played a role.
-Since multiple channels may have contributed to each transaction, the total of
-all transactions across all channels will exceed the actual number of
-transactions.
+The cell format (see L<WWW::Analytics::MultiTouch/CELL FORMATS>) to use for column headings.
 
-=item * distributed_touches
+=item * column_formats
 
-If set, the generated report includes the distributed-touches report; enabled by
-default.  The distributed-touches report shows, for each channel, a number of
-transactions and revenue amount in proportion to the number of touches for that
-channel.  Since each individual transaction is distributed across the
-contributing channels, the total of all transactions (revenue) across all
-channels will equal the actual number of transactions (revenue).
+An array of one or more cell formats (see L<WWW::Analytics::MultiTouch/CELL
+FORMATS>) to use in a round-robin manner across the columns of the data.
 
+=item * header_layout, footer_layout
 
-=item * transactions
+Page headers and footers.  See L<WWW::Analytics::MultiTouch/HEADERS AND FOOTERS> for details.
 
-If set, the generated report includes transactions report; enabled by default.
-The transactions report lists each transaction and the channels that contributed
-to it. 
+=item * heading_map
+
+A mapping from default report headings to custom report headings.  For example,
+
+  heading_map => { 
+                   Transactions => 'Distributed Transactions',
+                   'Revenue' => 'Distributed Revenue (US$)'
+                 }
+
 
 =back 
 
-=cut
+For every type of report, (all_touches_report, first_touch_report,
+transactions_report, etc), report-specific formatting options can be given in a
+hashref with corresponding name, e.g. 'all_touches', 'first_touch',
+'transactions'.  For example,
+
+  column_heading_format => { 
+                             bold => 1,
+			     color => 'white',
+			     bg_color => 'gray',
+			     right => 'white',
+                           },
+  column_format => [ 
+                              { bg_color => '#D0D0D0', },
+                              { bg_color => '#E8E8E8', },
+                           ],
+
+  all_touches => {
+    column_heading_format => { 
+                               color => 'blue'
+                             }
+                 }
+      
+
+The report-specific options are merged with the top level options and then used.
+
+=head2 all_touches_report
+
+=head2 even_touches_report
+
+=head2 distributed_touches_report
+
+=head2 first_touch_report
+
+=head2 last_touch_report
+
+=head2 fifty_fifty_report
+
+=head2 touchlist_report
+
+=head2 transaction_distribution_report
+
+=head2 channel_overlap_report
+
+These implement the individual reports, taking options similar to those described under L<report> above.
 
 =head1 RELATED INFORMATION
 

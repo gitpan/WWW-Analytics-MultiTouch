@@ -2,8 +2,20 @@ Revision history for WWW-Analytics-MultiTouch
 
 0.01    2010-06-23
         First version.
+
 0.02	2010-06-23
 	Added missing file bin/multitouch_report.pl
+
 0.03	2010-06-26
 	Added missing dependencies to Makefile.PL
+
+0.04	2010-07-06
+	Re-ordered rows/columns to place largest contributors first.
+
+0.05	2010-07-15
+	New reports - first/last/fifty-fifty, transaction distribution, channel
+	overlap, even distribution.
+
+0.06	2010-08-03
+	Updated documentation for release.
 

@@ -7,4 +7,8 @@ lib/WWW/Analytics/MultiTouch/Tabular.pm
 bin/multitouch_report.pl
 t/00-load.t
 t/multitouch.t
+t/tabular.t
+t/txt-expected.txt
+t/csv-expected.csv
+examples/demo.conf
 META.yml                                 Module meta-data (added by MakeMaker)

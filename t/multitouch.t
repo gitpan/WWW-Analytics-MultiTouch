@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 9;
+use Test::More tests => 18;
 use WWW::Analytics::MultiTouch;
 use DateTime;
 use DateTime::Duration;
@@ -30,12 +30,30 @@ my @events = (
     "__ORD!1!2.0!$t1*$channel3!$t0",
     );
 
+# formatted times and channels
+my %ft = map { $_ => eval "DateTime->from_epoch(epoch => \$t$_ )->strftime('%Y-%m-%d %H:%M:%S')" } ( 0 .. 3 );
+my %fchannel = map { $_ => eval "my \$c = \$channel$_; \$c =~ s/!\$/-(none)/; \$c =~ s/!/-/g; \$c" } ( 1 .. 3 );
+
+
 test1();
 test2();
 test3();
 
 sub _epoch_of {
     return shift->epoch;
+}
+
+sub _text_of {
+    my $cell = shift;
+    return (ref($cell) eq 'ARRAY' ? $cell->[0] : $cell) || '';
+}
+
+sub _simplify {
+    my $src = shift;
+
+    my @data = map { my $row = $_; [ map { _text_of($_) } @$row ] } @$src;
+
+    return \@data;
 }
 
 sub test1 {
@@ -51,21 +69,52 @@ sub test1 {
 
     $mt->summarise();
     my $all_touches_report = $mt->all_touches_report();
-    is_deeply($all_touches_report->{data}, [
-		  [ 'src1-med1-(none)', 5, 4, 28 ],
-		  [ 'src1-med1-sub3', 3, 3, 14 ],
-		  [ 'src2-med2-(none)', 1, 1, 10 ],
+;
+    is_deeply(_simplify($all_touches_report->{data}), [
+		  [ 'src1-med1-(none)', 5, 4, 28, '80.00', '93.33' ],
+		  [ 'src1-med1-sub3', 3, 3, 14, '60.00', '46.67' ],
+		  [ 'src2-med2-(none)', 1, 1, 10, '20.00', '33.33' ],
+		  [ 'ACTUAL TOTALS', 9, 5, 30, '', '' ],
 	      ], "All touches");
+    my $even_touches_report =  $mt->even_touches_report();
+    is_deeply(_simplify($even_touches_report->{data}), [
+		  [ 'src1-med1-(none)', 5, 2.5, 17, '50.00', '56.67' ],
+		  [ 'src1-med1-sub3', 3, 2, 8, '40.00', '26.67' ],
+		  [ 'src2-med2-(none)', 1, 0.5, 5, '10.00', '16.67' ],
+		  [ 'TOTAL', 9, 5, 30, 100, 100 ],
+	      ], "Even touches");
     my $distr_touches_report =  $mt->distributed_touches_report();
-    is_deeply($distr_touches_report->{data}, [
-		  [ 'src1-med1-(none)', 5, 2.5, 17 ],
-		  [ 'src1-med1-sub3', 3, 2, 8 ],
-		  [ 'src2-med2-(none)', 1, 0.5, 5 ],
+    is_deeply(_simplify($distr_touches_report->{data}), [
+		  [ 'src1-med1-(none)', 5, 2.5, 17, '50.00', '56.67' ],
+		  [ 'src1-med1-sub3', 3, 2, 8, '40.00', '26.67' ],
+		  [ 'src2-med2-(none)', 1, 0.5, 5, '10.00', '16.67' ],
+		  [ 'TOTAL', 9, 5, 30, 100, 100 ],
 	      ], "Distributed touches");
+    my $first_touch_report =  $mt->first_touch_report();
+    is_deeply(_simplify($first_touch_report->{data}), [
+		  [ 'src1-med1-sub3', 3, 3, 14, '60.00', '46.67' ],
+		  [ 'src2-med2-(none)', 1, 1, 10, '20.00', '33.33' ],
+		  [ 'src1-med1-(none)', 1, 1, 6, '20.00', '20.00' ],
+		  [ 'TOTAL', 5, 5, 30, 100, 100 ],
+	      ], "First touch");
+    my $last_touch_report =  $mt->last_touch_report();
+    is_deeply(_simplify($last_touch_report->{data}), [
+		  [ 'src1-med1-(none)', 4, 4, 28, '80.00', '93.33' ],
+		  [ 'src1-med1-sub3', 1, 1, 2, '20.00', '6.67' ],
+		  [ 'TOTAL', 5, 5, 30, 100, 100 ],
+		  [ '' ],
+	      ], "Last touch");
+    my $fifty_fifty_report =  $mt->fifty_fifty_report();
+    is_deeply(_simplify($fifty_fifty_report->{data}), [
+		  [ 'src1-med1-(none)', 5, 2.5, 17, '50.00', '56.67' ],
+		  [ 'src1-med1-sub3', 3, 2, 8, '40.00', '26.67' ],
+		  [ 'src2-med2-(none)', 1, 0.5, 5, '10.00', '16.67' ],
+		  [ 'TOTAL', 9, 5, 30, 100, 100 ],
+	      ], "Fifty-fifty");
     my $trans_report = $mt->transactions_report();
     #splice off date field
     splice(@$_, 1, 1) for @{$trans_report->{data}};
-    is_deeply($trans_report->{data}, 
+    is_deeply(_simplify($trans_report->{data}), 
 	      [['','Touches','Transactions','Revenue','Touches','Transactions','Revenue','Touches','Transactions','Revenue'],
 	       ['1','','','',1,1,2,'','',''],
 	       ['2',1,'0.5',2,1,'0.5',2,'','',''],
@@ -73,6 +122,33 @@ sub test1 {
 	       ['4',1,'0.5',4,1,'0.5',4,'','',''],
 	       ['5',1,'0.5',5,'','','',1,'0.5',5]], "Transactions");
 
+    my $touchlist_report = $mt->touchlist_report();
+    is_deeply(_simplify($touchlist_report->{data}), [
+	      [ 1, $ft{1}, '2.0', $fchannel{3}, $ft{0}, "ORDER(1)", $ft{1} ],
+	      [ 2, $ft{3}, '4.0', $fchannel{3}, $ft{0}, "ORDER(1)", $ft{1}, $fchannel{1}, $ft{2}, "ORDER(2)", $ft{3} ],
+	      [ 3, $ft{3}, '6.0', $fchannel{1}, $ft{0}, $fchannel{1}, $ft{2}, "ORDER(3)", $ft{3} ],
+	      [ 4, $ft{3}, '8.0', $fchannel{3}, $ft{0}, $fchannel{1}, $ft{2}, "ORDER(4)", $ft{3} ],
+	      [ 5, $ft{3}, '10.0', $fchannel{2}, $ft{1}, $fchannel{1}, $ft{2}, "ORDER(5)", $ft{3} ],
+	      ], "Touchlist");
+    my $trans_dist_report = $mt->transaction_distribution_report();
+    is_deeply(_simplify($trans_dist_report->{data}), [
+		  [ 'src1-med1-(none)', 3, 1 ],
+		  [ 'src1-med1-sub3', 3, '' ],
+		  [ 'src2-med2-(none)', 1, '' ],
+		  [ 'OVERALL', 1, 4 ],
+	      ], "Transaction Distribution");
+    my $channel_overlap_report =  $mt->channel_overlap_report();
+    is_deeply(_simplify($channel_overlap_report->{data}), [
+		  [ 'Channel Count', 'Touches', 'Transactions', 'Revenue', '% Transactions', '% Revenue', 'Efficiency' ],
+		  [ 1, 3, 2, 8, '40.00', '26.67', '0.67' ],
+		  [ 2, 6, 3, 22, '60.00', '73.33', '0.50' ],
+		  [ ' ' ],
+		  [ 'Channel Combination', 'Touches', 'Transactions', 'Revenue', '% Transactions', '% Revenue', 'Efficiency' ],
+		  [ 'src1-med1-sub3', 1, 1, 2, '20.00', '6.67', '1.00' ],
+		  [ 'src1-med1-(none)+src2-med2-(none)', 2, 1, 10, '20.00', '33.33', '0.50' ],
+		  [ 'src1-med1-(none)', 2, 1, 6, '20.00', '20.00', '0.50' ],
+		  [ 'src1-med1-(none)+src1-med1-sub3', 4, 2, 12, '40.00', '40.00', '0.50' ],
+	      ], "Channel Overlap");
 }
 
 sub test2 {
@@ -88,21 +164,23 @@ sub test2 {
 
     $mt->summarise(single_order_model => 1);
     my $all_touches_report = $mt->all_touches_report();
-    is_deeply($all_touches_report->{data}, [
-		  [ 'src1-med1-(none)', 5, 4, 28 ],
-		  [ 'src1-med1-sub3', 2, 2, 10 ],
-		  [ 'src2-med2-(none)', 1, 1, 10 ],
+    is_deeply(_simplify($all_touches_report->{data}), [
+		  [ 'src1-med1-(none)', 5, 4, 28, '80.00', '93.33' ],
+		  [ 'src1-med1-sub3', 2, 2, 10, '40.00', '33.33' ],
+		  [ 'src2-med2-(none)', 1, 1, 10, '20.00', '33.33' ],
+		  [ 'ACTUAL TOTALS', 8, 5, 30, '', '' ],
 	      ], "All touches single order");
     my $distr_touches_report =  $mt->distributed_touches_report();
-    is_deeply($distr_touches_report->{data}, [
-		  [ 'src1-med1-(none)', 5, 3, 19 ],
-		  [ 'src1-med1-sub3', 2, 1.5, 6 ],
-		  [ 'src2-med2-(none)', 1, 0.5, 5 ],
+    is_deeply(_simplify($distr_touches_report->{data}), [
+		  [ 'src1-med1-(none)', 5, 3, 19, '60.00', '63.33' ],
+		  [ 'src1-med1-sub3', 2, 1.5, 6, '30.00', '20.00' ],
+		  [ 'src2-med2-(none)', 1, 0.5, 5, '10.00', '16.67' ],
+		  [ 'TOTAL', 8, 5, 30, 100, 100 ],
 	      ], "Distributed touches single order");
     my $trans_report = $mt->transactions_report();
     #splice off date field
     splice(@$_, 1, 1) for @{$trans_report->{data}};
-    is_deeply($trans_report->{data}, 
+    is_deeply(_simplify($trans_report->{data}), 
 	      [['','Touches','Transactions','Revenue','Touches','Transactions','Revenue','Touches','Transactions','Revenue'],
 	       ['1','','','',1,1,2,'','',''],
 	       ['2',1,1,4,'','','','','',''],
@@ -110,6 +188,14 @@ sub test2 {
 	       ['4',1,'0.5',4,1,'0.5',4,'','',''],
 	       ['5',1,'0.5',5,'','','',1,'0.5',5]], "Transactions single order");
 
+    my $touchlist_report = $mt->touchlist_report();
+    is_deeply(_simplify($touchlist_report->{data}), [
+	      [ 1, $ft{1}, '2.0', $fchannel{3}, $ft{0}, "ORDER(1)", $ft{1} ],
+	      [ 2, $ft{3}, '4.0', $fchannel{1}, $ft{2}, "ORDER(2)", $ft{3} ],
+	      [ 3, $ft{3}, '6.0', $fchannel{1}, $ft{0}, $fchannel{1}, $ft{2}, "ORDER(3)", $ft{3} ],
+	      [ 4, $ft{3}, '8.0', $fchannel{3}, $ft{0}, $fchannel{1}, $ft{2}, "ORDER(4)", $ft{3} ],
+	      [ 5, $ft{3}, '10.0', $fchannel{2}, $ft{1}, $fchannel{1}, $ft{2}, "ORDER(5)", $ft{3} ],
+	      ], "Touchlist single order");
 }
 
 			    
@@ -126,30 +212,40 @@ sub test3 {
 
     $mt->summarise(window_length => 6);
     my $all_touches_report = $mt->all_touches_report();
-    is_deeply($all_touches_report->{data}, [
-		  [ 'src1-med1-(none)', 4, 4, 28 ],
-		  [ 'src1-med1-sub3', 1, 1, 2 ],
-		  [ 'src2-med2-(none)', 1, 1, 10 ],
+    is_deeply(_simplify($all_touches_report->{data}), [
+		  [ 'src1-med1-(none)', 4, 4, 28, '80.00', '93.33' ],
+		  [ 'src2-med2-(none)', 1, 1, 10, '20.00', '33.33' ],
+		  [ 'src1-med1-sub3', 1, 1, 2, '20.00', '6.67' ],
+		  [ 'ACTUAL TOTALS', 6, 5, 30, '', '' ],
 	      ], "All touches short window");
 
     my $distr_touches_report =  $mt->distributed_touches_report();
-    is_deeply($distr_touches_report->{data}, [
-		  [ 'src1-med1-(none)', 4, 3.5, 23 ],
-		  [ 'src1-med1-sub3', 1, 1, 2 ],
-		  [ 'src2-med2-(none)', 1, 0.5, 5 ],
+    is_deeply(_simplify($distr_touches_report->{data}), [
+		  [ 'src1-med1-(none)', 4, 3.5, 23, '70.00', '76.67' ],
+		  [ 'src2-med2-(none)', 1, 0.5, 5, '10.00', '16.67' ],
+		  [ 'src1-med1-sub3', 1, 1, 2, '20.00', '6.67' ],
+		  [ 'TOTAL', 6, 5, 30, 100, 100 ],
 	      ], "Distributed touches short window");
 
     my $trans_report = $mt->transactions_report();
     #splice off date field
     splice(@$_, 1, 1) for @{$trans_report->{data}};
-    is_deeply($trans_report->{data}, 
+    is_deeply(_simplify($trans_report->{data}), 
 	      [['','Touches','Transactions','Revenue','Touches','Transactions','Revenue','Touches','Transactions','Revenue'],
-	       ['1','','','',1,1,2,'','',''],
+	       ['1','','','','','','',1,1,2],
 	       ['2',1,1,4,'','','','','',''],
 	       ['3',1,1,6,'','','','','',''],
 	       ['4',1,1,8,'','','','','',''],
-	       ['5',1,'0.5',5,'','','',1,'0.5',5]], "Transactions short window");
+	       ['5',1,'0.5',5,1,'0.5',5,'','','']], "Transactions short window");
 
+    my $touchlist_report = $mt->touchlist_report();
+    is_deeply(_simplify($touchlist_report->{data}), [
+	      [ 1, $ft{1}, '2.0', $fchannel{3}, $ft{0}, "ORDER(1)", $ft{1} ],
+	      [ 2, $ft{3}, '4.0', "ORDER(1)", $ft{1}, $fchannel{1}, $ft{2}, "ORDER(2)", $ft{3} ],
+	      [ 3, $ft{3}, '6.0',  $fchannel{1}, $ft{2}, "ORDER(3)", $ft{3} ],
+	      [ 4, $ft{3}, '8.0',  $fchannel{1}, $ft{2}, "ORDER(4)", $ft{3} ],
+	      [ 5, $ft{3}, '10.0', $fchannel{2}, $ft{1}, $fchannel{1}, $ft{2}, "ORDER(5)", $ft{3} ],
+	      ], "Touchlist short window");
 }
 
 			    
