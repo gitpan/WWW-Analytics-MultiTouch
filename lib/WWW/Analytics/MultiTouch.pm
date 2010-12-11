@@ -15,7 +15,7 @@ use Path::Class qw/file/;
 
 use WWW::Analytics::MultiTouch::Tabular;
 
-our $VERSION = '0.10';
+our $VERSION = '0.11';
 
 my $default_header_colour = { bold => 1,
 			      color => 'white',

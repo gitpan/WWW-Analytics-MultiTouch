@@ -47,7 +47,7 @@ pod2usage(1) if $opts->{help};
 $opts = WWW::Analytics::MultiTouch->parse_config($opts, delete $opts->{conf});
 if ($opts->{debug}) {
     require Data::Dumper;
-    print Dumper($opts);
+    print Data::Dumper::Dumper($opts);
 }
 eval "require $opts->{class_name}";
 die "Failed to load class $opts->{class_name}: $@" if $@;

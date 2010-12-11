@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                WWW-Analytics-MultiTouch
-version:             0.10
+version:             0.11
 abstract:            Multi-touch web analytics, using Google Analytics
 license:             perl
 author:              
