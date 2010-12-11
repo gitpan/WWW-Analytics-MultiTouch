@@ -6,10 +6,10 @@ use warnings;
 use WWW::Analytics::MultiTouch;
 use Getopt::Long;
 use Pod::Usage;
-use Config::General qw/ParseConfig/;
-use Hash::Merge qw/merge/;
 
-my $opts = {};
+my $opts = {
+    class_name => 'WWW::Analytics::MultiTouch',
+};
 
 GetOptions($opts,
 	   'user=s',
@@ -38,38 +38,21 @@ GetOptions($opts,
 	   'channel_overlap_report!',
 	   'format=s',
 	   'conf=s',
+           'class_name=s',
 	   'bugfix1', # swap src/medium for organic, no public releases affected
 	   'help|?',
     ) or pod2usage(2);
 pod2usage(1) if $opts->{help};
 
-if (my $conf_file = delete $opts->{conf}) {
-    my %file_opts = ParseConfig(-ConfigFile => $conf_file, 
-				-AutoTrue => 1, 
-				-SplitPolicy => 'equalsign',
-				-UTF8 => 1);
-    Hash::Merge::set_behavior('RIGHT_PRECEDENT');
-    _fix_array_keys(\%file_opts, 'column_formats');
-
-    $opts = merge($opts, \%file_opts);
+$opts = WWW::Analytics::MultiTouch->parse_config($opts, delete $opts->{conf});
+if ($opts->{debug}) {
+    require Data::Dumper;
+    print Dumper($opts);
 }
+eval "require $opts->{class_name}";
+die "Failed to load class $opts->{class_name}: $@" if $@;
+$opts->{class_name}->process($opts);
 
-#use Data::Dumper; print Dumper($opts); exit;
-WWW::Analytics::MultiTouch->process($opts);
-
-sub _fix_array_keys {
-    my $hash = shift;
-    my $key = shift;
-    if (exists($hash->{$key}) && ref($hash->{$key}) ne 'ARRAY') {
-	$hash->{$key} = [ $hash->{$key} ];
-    }
-    for my $v (values %$hash) {
-	if (ref($v) eq 'HASH') {
-	    _fix_array_keys($v, $key);
-	}
-    }
-}
-	
 
 __END__
 
@@ -234,6 +217,12 @@ Enable debug output.
 
 Specify a configuration file from which to read options, including advanced templating options.
 
+=item * --class_name=CLASS
+
+Specify an alternative class name for WWW::Analytics::MultiTouch.  This allows
+you to write a new class based on WWW::Analytics::MultiTouch but still invoke it
+through this script.
+
 =back
 
 =head1 CONFIGURATION FILE
@@ -342,6 +331,11 @@ The options in the configuration file are the same as those described under
 L<WWW::Analytics::MultiTouch/process>.  An example configuration file can be
 found in the examples directory of this distribution.
 
+The special variable $cwd may be used to refer to the directory in which the
+configuration file is found, so filenames may be specified relative to this
+directory, e.g.
+
+  filename = $cwd/../images/MyLogo.png
 
 =head1 RELATED INFORMATION
 

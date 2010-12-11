@@ -9,11 +9,13 @@ use Data::Dumper;
 use Params::Validate qw(:all);
 use List::Util qw/sum max/;
 use List::MoreUtils qw/part/;
+use Config::General qw/ParseConfig/;
 use Hash::Merge qw/merge/;
+use Path::Class qw/file/;
 
 use WWW::Analytics::MultiTouch::Tabular;
 
-our $VERSION = '0.06';
+our $VERSION = '0.10';
 
 my $default_header_colour = { bold => 1,
 			      color => 'white',
@@ -47,6 +49,7 @@ my %formatting_params = (
     },
     header_layout => 0,
     footer_layout => 0,
+    strict_integer_values => 0,
     );
 
 sub new {
@@ -110,16 +113,16 @@ sub get_data {
 	my $res = $data_feed->retrieve_paged($req);
 	die $res->message unless $res->is_success;
 	for my $entry (@{$res->entries}) {
-	    my $metrics = $entry->metrics;
-	    my $dims = $entry->dimensions;
-	    my %names = map { $dims->[$_]->name => $_ } (0 .. @$dims - 1);
-	    my @events = $self->_split_events($dims->[$names{'ga:eventLabel'}]->value);
+            my $dims = $entry->dimensions;
+            my %names = map { $dims->[$_]->name => $_ } (0 .. @$dims - 1);
+            my @events = $self->split_events($dims->[$names{'ga:eventLabel'}]->value);
 
-	    # Keep event if within reporting time range (not GA time range)
-	    my $t = DateTime->from_epoch(epoch => $events[0][3])->set_time_zone($self->{report_timezone});
-	    if ($start_date <= $t && $t < $end_date) {
-		$data{$dims->[$names{'ga:eventAction'}]->value} = [ $ymd, @events ];
-	    }
+            # Keep event if within reporting time range (not GA time range)
+            my $t = DateTime->from_epoch(epoch => $events[0][3])->set_time_zone($self->{report_timezone});
+            if ($start_date <= $t && $t < $end_date) {
+                my ($key, $events) = $self->condition_entry($dims->[$names{'ga:eventAction'}]->value, \@events);
+                $data{$key} = [ $ymd, @$events ] if $key;
+            }
 	}
 	$date->add(days => 1);
     }
@@ -129,6 +132,31 @@ sub get_data {
 			      transactions => \%data,
     };
 }
+
+sub set_data {
+    my $self = shift;
+    my %params = validate(@_, { start_date => 0,
+				end_date => 0,
+                                transactions => { required => 1,
+                                                  type => HASHREF,
+                                },
+			  });
+    
+    my $start_date = _to_date_time($params{start_date}, $self->{report_timezone});
+    my $end_date = _to_date_time($params{end_date}, $self->{report_timezone});
+
+    $self->{current_data} = { start_date => $start_date,
+			      end_date => $end_date,
+			      transactions => $params{transactions},
+    };
+}
+
+sub condition_entry {
+    my ($self, $key, $touches) = @_;
+
+    return ($key, $touches);
+}
+
 
 sub _to_date_time {
     my $date = shift;
@@ -144,7 +172,7 @@ sub _to_date_time {
 
 # Splits event label into array of [ source, medium, subcat, time ]
 # or for orders, [ __ORD, TID, revenue, time ]
-sub _split_events {
+sub split_events {
     my ($self, $events) = @_;
 
     return unless $events;
@@ -170,6 +198,7 @@ sub summarise {
 				single_order_model => 0,
 				channel_pattern => { default => join($self->{patsep}, qw/source med subcat/) },
 				channel => 0,
+				adjustments => { type => HASHREF, default => {} },
 			  });
     my $patsubst = $self->_compile_channel_pattern($params{channel_pattern});
     my $dt = $params{window_length} * 24 * 3600;
@@ -202,6 +231,10 @@ sub summarise {
 	# Set window start based on browser timestamps
 	my $window_start = $order->[3] - $dt;
 
+	# work out adjustment factors, if any
+	my $trans_adj = $params{adjustments}{$rec->[0]}{transactions} || 1;
+	my $rev_adj = $params{adjustments}{$rec->[0]}{revenue} || $trans_adj;
+
 	# Iterate through list of touches and summarise in %touches and @touchlist
 	my %touches;
 	push(@touchlist, []);
@@ -225,9 +258,9 @@ sub summarise {
 		}
 
 		unless ($first_touch_channels{$channel} && !$seen_first_touch{$channel}) {
-		    $touches{$channel}{count}++;
-		    $touches{$channel}{transactions} = 1;
-		    $touches{$channel}{revenue} = $rev;
+		    $touches{$channel}{count} += $trans_adj;
+		    $touches{$channel}{transactions} = $trans_adj;
+		    $touches{$channel}{revenue} = $rev * $rev_adj;
 		    unshift(@{$touchlist[-1]}, [ $channel, $entry->[-1] ]);
 		}
 	    }
@@ -258,12 +291,12 @@ sub summarise {
 	    }
 
 	    if (defined $firstchannel) {
-		$firstlast{'first'}{$firstchannel}{count}++;
-		$firstlast{'first'}{$firstchannel}{transactions}++;
-		$firstlast{'first'}{$firstchannel}{revenue} += $rev;
-		$firstlast{'last'}{$lastchannel}{count}++;
-		$firstlast{'last'}{$lastchannel}{transactions}++;
-		$firstlast{'last'}{$lastchannel}{revenue} += $rev;
+		$firstlast{'first'}{$firstchannel}{count} += $trans_adj;
+		$firstlast{'first'}{$firstchannel}{transactions} += $trans_adj;
+		$firstlast{'first'}{$firstchannel}{revenue} += $rev * $rev_adj;
+		$firstlast{'last'}{$lastchannel}{count} += $trans_adj;
+		$firstlast{'last'}{$lastchannel}{transactions} += $trans_adj;
+		$firstlast{'last'}{$lastchannel}{revenue} += $rev * $rev_adj;
 	    }
 
 	    # for hybrid, only count once if first/last channel are the same touch
@@ -277,9 +310,9 @@ sub summarise {
 	    if (@channels) {
 		my $scale = 1/@channels;
 		for my $channel (@channels) {
-		    $firstlast{hybrid}{$channel}{count}++;
-		    $firstlast{hybrid}{$channel}{transactions} += $scale;
-		    $firstlast{hybrid}{$channel}{revenue} += $scale * $rev;
+		    $firstlast{hybrid}{$channel}{count} += $trans_adj;
+		    $firstlast{hybrid}{$channel}{transactions} += $scale * $trans_adj;
+		    $firstlast{hybrid}{$channel}{revenue} += $scale * $rev * $rev_adj;
 		}
 	    }
 	}
@@ -315,16 +348,16 @@ sub summarise {
 			   rev => $order->[2], 
 			   touches => \%touches_norm }); 
 	    # distribution of touches by number of conversions
-	    $transdist{$touches{$_}{count}}{$_}++ for keys %touches;
-	    $transdistoverall{sum(map { $touches{$_}{count}} keys %touches)}++;
+	    $transdist{$touches{$_}{count}}{$_} += $trans_adj for keys %touches;
+	    $transdistoverall{sum(map { $touches{$_}{count}} keys %touches)} += $trans_adj;
 
 	    my $key = join('+', sort keys %touches);
-	    $overlap{joint}{$key}{transactions}++;
-	    $overlap{joint}{$key}{revenue} += $rev;
+	    $overlap{joint}{$key}{transactions} += $trans_adj;
+	    $overlap{joint}{$key}{revenue} += $rev * $rev_adj;
 	    $overlap{joint}{$key}{touches} += $touches_total;
 	    $key = scalar keys %touches;
-	    $overlap{count}{$key}{transactions}++;
-	    $overlap{count}{$key}{revenue} += $rev;
+	    $overlap{count}{$key}{transactions} += $trans_adj;
+	    $overlap{count}{$key}{revenue} += $rev * $rev_adj;
 	    $overlap{count}{$key}{touches} += $touches_total;
 
 	}
@@ -418,7 +451,11 @@ sub report {
 				column_formats => 0,
 				header_layout => 0,
 				footer_layout => 0,
+				strict_integer_values => 0,
 				heading_map => 0,
+                                report_writer => { type => CODEREF,
+                                                   optional => 1,
+                                },
 			  });
     if ($params{filename} =~ m/\.(xls|txt|csv)$/i) {
 	$params{'format'} = lc($1);
@@ -442,10 +479,15 @@ sub report {
 	     $self->$method(_opts_subset(_merge_params(\%params, $params{$report}),
 					 @report_options))) 
     }
-    my $output = WWW::Analytics::MultiTouch::Tabular->new(_opts_subset(\%params,
-								       qw/format filename/));
-    $output->print(\@reports);
-    $output->close();
+    if ($params{report_writer}) {
+        $params{report_writer}->(\@reports, \%params);
+    }
+    else {
+        my $output = WWW::Analytics::MultiTouch::Tabular->new(_opts_subset(\%params,
+                                                                           qw/format filename/));
+        $output->print(\@reports);
+        $output->close();
+    }
 }
 
 sub _merge_params {
@@ -553,8 +595,11 @@ sub _touches_report {
      # Total based on distributed touches to get actual totals
     my @totals;
     my %totals;
+    my $formatter = sub { shift };
+    $formatter = sub { sprintf("%d", shift) } if $params->{strict_integer_values};
+
     for my $col (qw/count transactions revenue/) {
-	push(@totals, sum map { $summary_for_total->{$_}{$col} } keys %{$summary_for_total});
+	push(@totals, $formatter->(sum map { $summary_for_total->{$_}{$col} } keys %{$summary_for_total}));
 	$totals{$col} = $totals[-1];
     }
     if ($params->{total_100}) {
@@ -567,7 +612,7 @@ sub _touches_report {
     for my $channel (sort keys %{$summary}) {
 	my $i = 0;
 	push(@data, [ [ $channel, $params->{row_heading_format} ],
-		      (map { [ $summary->{$channel}{$_}, $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/count transactions revenue/),
+		      (map { [ $formatter->($summary->{$channel}{$_}), $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/count transactions revenue/),
 		      (map { [ sprintf("%.2f", $summary->{$channel}{$_} / $totals{$_} * 100), $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/transactions revenue/),
 	     ]);
     }
@@ -844,7 +889,7 @@ sub _add_layout {
     my $report = shift;
     my $params = shift;
 
-    for (qw/header_layout footer_layout/) {
+    for (qw/header_layout footer_layout strict_integer_values/) {
 	$report->{$_} = $params->{$_} if defined $params->{$_};
     }
 }
@@ -885,7 +930,7 @@ sub process {
     my $mt = $class->new(_opts_subset($opts, qw/user pass id event_category fieldsep recsep patsep debug bugfix1 channel_map date_format time_format ga_timezone report_timezone revenue_scale/));
 
     $mt->get_data(_opts_subset($opts, qw/start_date end_date/));
-    $mt->summarise(_opts_subset($opts, qw/window_length single_order_model channel_pattern channel/));
+    $mt->summarise(_opts_subset($opts, qw/window_length single_order_model channel_pattern channel adjustments/));
     $mt->report(_opts_subset($opts, qw/
 all_touches_report even_touches_report distributed_touches_report first_touch_report last_touch_report fifty_fifty_report 
 transactions_report touchlist_report transaction_distribution_report channel_overlap_report
@@ -893,7 +938,7 @@ transactions_report touchlist_report transaction_distribution_report channel_ove
 all_touches even_touches distributed_touches first_touch last_touch fifty_fifty 
 transactions touchlist transaction_distribution channel_overlap
 
-report_order filename format column_heading_format column_formats header_layout footer_layout heading_map/));
+report_order filename format column_heading_format column_formats header_layout footer_layout strict_integer_values heading_map/));
 }
 
 sub _opts_subset {
@@ -923,6 +968,47 @@ sub _format_time {
 	->strftime( $self->{time_format} ) 
 	if defined $t;
     return 'UNKNOWN';
+}
+
+
+sub parse_config {
+    my $class = shift;
+    my $opts = shift;
+    my $conf_file = shift;
+
+    return $opts unless $conf_file;
+    die "Config file $conf_file does not exist or is not readable" unless -f $conf_file && -r $conf_file;
+
+    my %file_opts = ParseConfig(-ConfigFile => $conf_file, 
+				-AutoTrue => 1, 
+				-SplitPolicy => 'equalsign',
+				-UTF8 => 1,
+                                -InterPolateVars => 1,
+                                -InterPolateEnv => 1,
+                                -IncludeRelative => 1,
+                                -DefaultConfig => { 
+                                    cwd => file($conf_file)->dir->absolute->stringify,
+                                },
+        );
+    Hash::Merge::set_behavior('RIGHT_PRECEDENT');
+    _fix_array_keys(\%file_opts, 'column_formats');
+
+    $opts = merge($opts, \%file_opts);
+
+    return $opts;
+}
+
+sub _fix_array_keys {
+    my $hash = shift;
+    my $key = shift;
+    if (exists($hash->{$key}) && ref($hash->{$key}) ne 'ARRAY') {
+	$hash->{$key} = [ $hash->{$key} ];
+    }
+    for my $v (values %$hash) {
+	if (ref($v) eq 'HASH') {
+	    _fix_array_keys($v, $key);
+	}
+    }
 }
 
 =head1 NAME
@@ -1145,8 +1231,21 @@ over-attribution to the direct channel.  Example:
     Direct => { requires_first_touch => 1 }
   }
 
-=back
+=item * adjustments
 
+A hashref containing transactions and revenue corrections that may be
+applied for a given day.  This allows, for example, compensation for
+lost data for short periods of time.  A typical form of the adjustments hash is:
+
+  {
+    2010-09-01 => { transactions => 1.4, revenue => 1.3 }
+  }
+
+which would apply correction factors of 1.4 and 1.3 for transaction counts
+and revenue respectively for any transactions occurring on the date
+2010-09-01.
+
+=back
 
 =head2 report
 
@@ -1269,6 +1368,15 @@ FORMATS>) to use in a round-robin manner across the columns of the data.
 
 Page headers and footers.  See L<WWW::Analytics::MultiTouch/HEADERS AND FOOTERS> for details.
 
+=item * strict_integer_values
+
+If set, transactions and revenue will be reported in integer formats.
+Where a reasonable number of transactions are being counted, the
+fractional part of the transaction count in a distributed transactions
+report is rarely of consequence, and for some the concept of a
+fractional transaction attribution can be a distraction from the key
+messages of these reports, so this option helps to keep it simple.
+
 =item * heading_map
 
 A mapping from default report headings to custom report headings.  For example,
@@ -1325,6 +1433,57 @@ The report-specific options are merged with the top level options and then used.
 =head2 channel_overlap_report
 
 These implement the individual reports, taking options similar to those described under L<report> above.
+
+=head1 DEVELOPER METHODS
+
+As well as the user API methods list above, there are also a number of methods
+that have been exposed as part of the API for developer purposes, e.g. for
+developing subclasses to override specific functionality, or for integrating
+into systems other than Google Analytics.
+
+=head2 set_data
+
+    $mt->set_data(start_date => 20100101,
+                  end_date => 20100130,
+                  transactions => \%transactions,
+    );
+
+Instead of invoking get_data to retrieve data from Google Analytics, it is also
+possible to set data directly - e.g. data collected through another mechanism,
+or data from Google Analytics that has been saved to file.  set_data allows you
+to directly specify the data for subsequent analysis.
+
+Parameters 'start_date' and 'end_date' are used for reporting and should have the form YYYYMMDD.
+
+Parameter 'transactions' is a hash of transaction ID to [date (YMD), list of touches] (see
+L<split_events> for description).
+
+=head2 split_events
+
+    @events = $mt->split_events($cookie_value)
+
+Splits event label (i.e. 'multitouch' cookie value) into a list comprising order and touch arrayrefs.  A touch has format 
+  [ source, medium, subcat, time ]
+and an order has format 
+  [ '__ORD', transactionID, revenue, time ].
+
+=head2 condition_entry
+
+    ($conditioned_key, $conditioned_touches) = $self->condition_entry($key, \@touches)
+
+condition_entry is called by L<get_data> for each data entry retrieved from
+Google Analytics.  It is possibly useful for subclasses to override, in case any
+special data conditioning is required.  $key is the event label (transaction ID)
+and @touches is the list of touches, each touch being an array as described
+under L<split_events>.  Conditioning might include removal of duplicates, or
+normalisation of transaction IDs.
+
+=head2 parse_config
+
+    $opts = WWW::Analytics::MultiTouch->parse_config($opts, $config_file)
+
+Parses $config_file and merges options with $opts.
+
 
 =head1 RELATED INFORMATION
 

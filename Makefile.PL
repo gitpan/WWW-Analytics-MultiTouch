@@ -11,6 +11,7 @@ WriteMakefile(
       ? ('LICENSE'=> 'perl')
       : ()),
     PL_FILES            => {},
+    EXE_FILES           => [ qw{bin/multitouch_report.pl} ],
     PREREQ_PM => {
         'Test::More' => 0,
 	'Net::Google::Analytics' => 0,
@@ -32,6 +33,7 @@ WriteMakefile(
 	'POSIX' => 0,
 	'LWP::UserAgent' => 0,
 	'File::Temp' => 0,
+        'Path::Class' => 0,
     },
     dist                => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
     clean               => { FILES => 'WWW-Analytics-MultiTouch-*' },

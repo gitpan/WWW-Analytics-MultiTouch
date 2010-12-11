@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                WWW-Analytics-MultiTouch
-version:             0.06
+version:             0.10
 abstract:            Multi-touch web analytics, using Google Analytics
 license:             perl
 author:              
@@ -22,6 +22,7 @@ requires:
     Net::Google::Analytics:        0
     Net::Google::AuthSub:          0
     Params::Validate:              0
+    Path::Class:                   0
     Pod::Usage:                    0
     POSIX:                         0
     Spreadsheet::WriteExcel:       2.37

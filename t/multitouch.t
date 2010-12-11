@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 18;
+use Test::More tests => 20;
 use WWW::Analytics::MultiTouch;
 use DateTime;
 use DateTime::Duration;
@@ -38,6 +38,7 @@ my %fchannel = map { $_ => eval "my \$c = \$channel$_; \$c =~ s/!\$/-(none)/; \$
 test1();
 test2();
 test3();
+test4();
 
 sub _epoch_of {
     return shift->epoch;
@@ -58,7 +59,7 @@ sub _simplify {
 
 sub test1 {
     my $mt =  WWW::Analytics::MultiTouch->new(user => 1, pass => 2, id => 3);
-    my @event_data = map { [ $mt->_split_events($_) ] } @events;
+    my @event_data = map { [ $mt->split_events($_) ] } @events;
     my %data = map { 'TID' . $_->[0][1] => [ DateTime->from_epoch(epoch => $_->[0][3])->ymd('-'),
 					     @$_ ] } @event_data;
 
@@ -153,7 +154,7 @@ sub test1 {
 
 sub test2 {
     my $mt =  WWW::Analytics::MultiTouch->new(user => 1, pass => 2, id => 3);
-    my @event_data = map { [ $mt->_split_events($_) ] } @events;
+    my @event_data = map { [ $mt->split_events($_) ] } @events;
     my %data = map { 'TID' . $_->[0][1] => [ DateTime->from_epoch(epoch => $_->[0][3])->ymd('-'),
 					     @$_ ] } @event_data;
 
@@ -201,7 +202,7 @@ sub test2 {
 			    
 sub test3 {
     my $mt =  WWW::Analytics::MultiTouch->new(user => 1, pass => 2, id => 3);
-    my @event_data = map { [ $mt->_split_events($_) ] } @events;
+    my @event_data = map { [ $mt->split_events($_) ] } @events;
     my %data = map { 'TID' . $_->[0][1] => [ DateTime->from_epoch(epoch => $_->[0][3])->ymd('-'),
 					     @$_ ] } @event_data;
 
@@ -251,3 +252,40 @@ sub test3 {
 			    
     
     
+sub test4 {
+    my $mt =  WWW::Analytics::MultiTouch->new(user => 1, pass => 2, id => 3);
+    my @event_data = map { [ $mt->split_events($_) ] } @events;
+    my %data = map { 'TID' . $_->[0][1] => [ DateTime->from_epoch(epoch => $_->[0][3])->ymd('-'),
+					     @$_ ] } @event_data;
+
+    $mt->set_data( start_date => DateTime->from_epoch(epoch => $t0),
+		   end_date => DateTime->from_epoch(epoch => $t3),
+		   transactions => \%data,
+	);
+
+    # Apply adjustment to day of $t1 (order 1, channel 3)
+    $mt->summarise(adjustments => 
+		   {
+		       DateTime->from_epoch(epoch => $t1)->ymd('-') => 
+		       {
+			   revenue => 2,
+			   transactions => 3,
+		       }
+		   }
+		   );
+    my $all_touches_report = $mt->all_touches_report();
+;
+    is_deeply(_simplify($all_touches_report->{data}), [
+		  [ 'src1-med1-(none)', 5, 4, 28, '57.14', '87.50' ],
+		  [ 'src1-med1-sub3', 5, 5, 16, '71.43', '50.00' ],
+		  [ 'src2-med2-(none)', 1, 1, 10, '14.29', '31.25' ],
+		  [ 'ACTUAL TOTALS', 11, 7, 32, '', '' ],
+	      ], "All touches");
+    my $even_touches_report =  $mt->even_touches_report();
+    is_deeply(_simplify($even_touches_report->{data}), [
+		  [ 'src1-med1-(none)', 5, 2.5, 17, '35.71', '53.12' ],
+		  [ 'src1-med1-sub3', 5, 4, 10, '57.14', '31.25' ],
+		  [ 'src2-med2-(none)', 1, 0.5, 5, '7.14', '15.62' ],
+		  [ 'TOTAL', 11, 7, 32, 100, 100 ],
+	      ], "Even touches");
+}
