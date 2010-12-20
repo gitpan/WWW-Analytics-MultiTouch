@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 20;
+use Test::More tests => 21;
 use WWW::Analytics::MultiTouch;
 use DateTime;
 use DateTime::Duration;
@@ -34,11 +34,14 @@ my @events = (
 my %ft = map { $_ => eval "DateTime->from_epoch(epoch => \$t$_ )->strftime('%Y-%m-%d %H:%M:%S')" } ( 0 .. 3 );
 my %fchannel = map { $_ => eval "my \$c = \$channel$_; \$c =~ s/!\$/-(none)/; \$c =~ s/!/-/g; \$c" } ( 1 .. 3 );
 
+# some round up, some round down
+my $ru = (sprintf("%d", 2.5) eq '2') ? 0 : 1;
 
 test1();
 test2();
 test3();
 test4();
+test5();
 
 sub _epoch_of {
     return shift->epoch;
@@ -46,7 +49,8 @@ sub _epoch_of {
 
 sub _text_of {
     my $cell = shift;
-    return (ref($cell) eq 'ARRAY' ? $cell->[0] : $cell) || '';
+    $cell = $cell->[0] if ref($cell) eq 'ARRAY';
+    return defined $cell ? $cell : '';
 }
 
 sub _simplify {
@@ -134,8 +138,8 @@ sub test1 {
     my $trans_dist_report = $mt->transaction_distribution_report();
     is_deeply(_simplify($trans_dist_report->{data}), [
 		  [ 'src1-med1-(none)', 3, 1 ],
-		  [ 'src1-med1-sub3', 3, '' ],
-		  [ 'src2-med2-(none)', 1, '' ],
+		  [ 'src1-med1-sub3', 3, 0 ],
+		  [ 'src2-med2-(none)', 1, 0 ],
 		  [ 'OVERALL', 1, 4 ],
 	      ], "Transaction Distribution");
     my $channel_overlap_report =  $mt->channel_overlap_report();
@@ -283,9 +287,31 @@ sub test4 {
 	      ], "All touches");
     my $even_touches_report =  $mt->even_touches_report();
     is_deeply(_simplify($even_touches_report->{data}), [
-		  [ 'src1-med1-(none)', 5, 2.5, 17, '35.71', '53.12' ],
+		  [ 'src1-med1-(none)', 5, 2.5, 17, '35.71', $ru ? '53.13' : '53.12' ],
 		  [ 'src1-med1-sub3', 5, 4, 10, '57.14', '31.25' ],
-		  [ 'src2-med2-(none)', 1, 0.5, 5, '7.14', '15.62' ],
+		  [ 'src2-med2-(none)', 1, 0.5, 5, '7.14', $ru ? '15.63' : '15.62' ],
 		  [ 'TOTAL', 11, 7, 32, 100, 100 ],
 	      ], "Even touches");
+}
+
+sub test5 {
+    my $mt =  WWW::Analytics::MultiTouch->new(user => 1, pass => 2, id => 3);
+    my @event_data = map { [ $mt->split_events($_) ] } @events;
+    my %data = map { 'TID' . $_->[0][1] => [ DateTime->from_epoch(epoch => $_->[0][3])->ymd('-'),
+					     @$_ ] } @event_data;
+
+    $mt->{current_data} = { start_date => DateTime->from_epoch(epoch => $t0),
+			    end_date => DateTime->from_epoch(epoch => $t3),
+			    transactions => \%data,
+    };
+
+    $mt->summarise();
+
+    my $fifty_fifty_report =  $mt->fifty_fifty_report(strict_integer_values => 1);
+    is_deeply(_simplify($fifty_fifty_report->{data}), [
+		  [ 'src1-med1-(none)', 5, $ru ? 3 : 2, 17, '50.00', '56.67' ],
+		  [ 'src1-med1-sub3', 3, 2, 8, '40.00', '26.67' ],
+		  [ 'src2-med2-(none)', 1, $ru ? 1 : 0, 5, '10.00', '16.67' ],
+		  [ 'TOTAL', 9, 5, 30, 100, 100 ],
+	      ], "Fifty-fifty");
 }

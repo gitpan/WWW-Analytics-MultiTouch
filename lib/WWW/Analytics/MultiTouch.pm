@@ -15,7 +15,7 @@ use Path::Class qw/file/;
 
 use WWW::Analytics::MultiTouch::Tabular;
 
-our $VERSION = '0.11';
+our $VERSION = '0.12';
 
 my $default_header_colour = { bold => 1,
 			      color => 'white',
@@ -131,6 +131,7 @@ sub get_data {
 			      end_date => $end_date->subtract(days => 1),
 			      transactions => \%data,
     };
+    $self->_debug(sub { Dumper($self->{current_data}) });
 }
 
 sub set_data {
@@ -920,7 +921,8 @@ sub _currency_conversion {
 
 sub _debug {
     my $self = shift;
-    print @_ if $self->{debug};
+    my @args = map { ref($_) eq 'CODE' ? $_->() : $_ } @_;
+    print STDERR @args if $self->{debug};
 }
 
 sub process {

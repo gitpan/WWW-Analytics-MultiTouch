@@ -284,7 +284,9 @@ sub _row_of {
 
 sub _text_of {
     my $cell = shift;
-    return (ref($cell) eq 'ARRAY' ? $cell->[0] : $cell) || '';
+
+    $cell = $cell->[0] if ref($cell) eq 'ARRAY';
+    return defined $cell ? $cell : '';
 }
 
 sub _cache_image_file {
