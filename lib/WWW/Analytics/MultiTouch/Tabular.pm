@@ -124,7 +124,7 @@ sub xls
     my ($self, $worksheets) = @_;
 
     my $handle = $self->filehandle;
-    binmode $handle, ':bytes';
+    binmode $handle, ':raw';
     my $xls = Spreadsheet::WriteExcel->new($handle);
 
     my $bold = $xls->add_format();

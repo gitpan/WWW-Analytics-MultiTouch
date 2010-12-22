@@ -36,3 +36,9 @@ Revision history for WWW-Analytics-MultiTouch
 
 0.11	2010-12-11
 	Fixed bug in debug output.
+
+0.12	2010-12-20
+	Attempted fix for test failures on Win32
+
+0.13	2010-12-22
+	Further fix for test failures on Win32
