@@ -49,3 +49,6 @@ Revision history for WWW-Analytics-MultiTouch
 0.32    2012-08-06
         Post-upgrade fixes
  
+0.33    2012-08-07
+        Potential divide-by-zero fixes.
+ 

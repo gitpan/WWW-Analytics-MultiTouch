@@ -15,7 +15,7 @@ use Path::Class qw/file/;
 
 use WWW::Analytics::MultiTouch::Tabular;
 
-our $VERSION = '0.32';
+our $VERSION = '0.33';
 
 my $client_id = "452786331228.apps.googleusercontent.com";
 my $client_secret = "ZNSff9Rzw0WS0I4M-F_8NUL7";
@@ -377,7 +377,7 @@ sub summarise {
 	    my %touches_norm;
 	    my $touches_total = sum(map { $touches{$_}{count} } keys %touches);
 	    for my $sum (qw/transactions revenue/) {
-		$touches_norm{$_}{$sum} = $touches{$_}{$sum} * $touches{$_}{count} / $touches_total for keys %touches;
+		$touches_norm{$_}{$sum} = $touches{$_}{$sum} * $touches{$_}{count} / ($touches_total || 1) for keys %touches;
 	    }
 	    for (keys %touches) {
 		my $c = $touches{$_}{count};
@@ -661,7 +661,7 @@ sub _touches_report {
 	my $i = 0;
 	push(@data, [ [ $channel, $params->{row_heading_format} ],
 		      (map { [ $formatter->($summary->{$channel}{$_}), $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/count transactions revenue/),
-		      (map { [ sprintf("%.2f", $summary->{$channel}{$_} / $totals{$_} * 100), $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/transactions revenue/),
+		      (map { [ sprintf("%.2f", $summary->{$channel}{$_} / ($totals{$_} || 1) * 100), $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/transactions revenue/),
 	     ]);
     }
 
@@ -924,8 +924,8 @@ sub _overlap_report {
 	my $i = 0;
 	push(@data, [ [ $row, $params->{row_heading_format} ],
 		       (map { [ $src->{$row}{$_}, $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/touches transactions revenue/),
-		       (map { [ sprintf("%.2f", $src->{$row}{$_} / $totals{$_} * 100), $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/transactions revenue/),
-		      [ sprintf("%.2f", $src->{$row}{transactions} / $src->{$row}{touches}) ]
+		       (map { [ sprintf("%.2f", $src->{$row}{$_} / ($totals{$_} || 1) * 100), $params->{column_formats}->[$i++ % @{$params->{column_formats}}] ] } qw/transactions revenue/),
+		      [ sprintf("%.2f", $src->{$row}{transactions} / ($src->{$row}{touches} || 1)) ]
 	     ]);
     }
     push(@$result, sort $comparator @data);

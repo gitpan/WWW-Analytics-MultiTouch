@@ -38,4 +38,4 @@ requires:
   Test::More: 0
   Text::CSV_XS: 0.73
   Text::Table: 0
-version: 0.32
+version: 0.33
