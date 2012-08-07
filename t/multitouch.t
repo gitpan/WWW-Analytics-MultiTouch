@@ -59,7 +59,7 @@ sub _simplify {
 }
 
 sub test1 {
-    my $mt =  WWW::Analytics::MultiTouch->new(user => 1, pass => 2, id => 3);
+    my $mt =  WWW::Analytics::MultiTouch->new(id => 1, refresh_token => 2, auth_token => 3);
     my @event_data = map { [ $mt->split_events($_) ] } @events;
     my %data = map { 'TID' . $_->[0][1] => [ DateTime->from_epoch(epoch => $_->[0][3])->ymd('-'),
 					     @$_ ] } @event_data;
@@ -154,7 +154,7 @@ sub test1 {
 }
 
 sub test2 {
-    my $mt =  WWW::Analytics::MultiTouch->new(user => 1, pass => 2, id => 3);
+    my $mt =  WWW::Analytics::MultiTouch->new(id => 1, refresh_token => 2, auth_token => 3);
     my @event_data = map { [ $mt->split_events($_) ] } @events;
     my %data = map { 'TID' . $_->[0][1] => [ DateTime->from_epoch(epoch => $_->[0][3])->ymd('-'),
 					     @$_ ] } @event_data;
@@ -202,7 +202,7 @@ sub test2 {
 
 			    
 sub test3 {
-    my $mt =  WWW::Analytics::MultiTouch->new(user => 1, pass => 2, id => 3);
+    my $mt =  WWW::Analytics::MultiTouch->new(id => 1, refresh_token => 2, auth_token => 3);
     my @event_data = map { [ $mt->split_events($_) ] } @events;
     my %data = map { 'TID' . $_->[0][1] => [ DateTime->from_epoch(epoch => $_->[0][3])->ymd('-'),
 					     @$_ ] } @event_data;
@@ -254,7 +254,7 @@ sub test3 {
     
     
 sub test4 {
-    my $mt =  WWW::Analytics::MultiTouch->new(user => 1, pass => 2, id => 3);
+    my $mt =  WWW::Analytics::MultiTouch->new(id => 1, refresh_token => 2, auth_token => 3);
     my @event_data = map { [ $mt->split_events($_) ] } @events;
     my %data = map { 'TID' . $_->[0][1] => [ DateTime->from_epoch(epoch => $_->[0][3])->ymd('-'),
 					     @$_ ] } @event_data;
@@ -292,7 +292,7 @@ sub test4 {
 }
 
 sub test5 {
-    my $mt =  WWW::Analytics::MultiTouch->new(user => 1, pass => 2, id => 3);
+    my $mt =  WWW::Analytics::MultiTouch->new(id => 1, refresh_token => 2, auth_token => 3);
     my @event_data = map { [ $mt->split_events($_) ] } @events;
     my %data = map { 'TID' . $_->[0][1] => [ DateTime->from_epoch(epoch => $_->[0][3])->ymd('-'),
 					     @$_ ] } @event_data;

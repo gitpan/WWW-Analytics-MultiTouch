@@ -42,3 +42,10 @@ Revision history for WWW-Analytics-MultiTouch
 
 0.13	2010-12-22
 	Further fix for test failures on Win32
+
+0.30    2012-08-05
+        Upgraded to use Net::Google::Analytics version 3.00 (new API) including OAuth2.
+
+0.32    2012-08-06
+        Post-upgrade fixes
+ 

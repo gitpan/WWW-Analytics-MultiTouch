@@ -3,19 +3,22 @@ package WWW::Analytics::MultiTouch;
 use warnings;
 use strict;
 use Net::Google::Analytics;
-use Net::Google::AuthSub;
+use Net::Google::Analytics::OAuth2;
 use DateTime;
 use Data::Dumper;
 use Params::Validate qw(:all);
 use List::Util qw/sum max/;
 use List::MoreUtils qw/part/;
-use Config::General qw/ParseConfig/;
+use Config::General qw/ParseConfig SaveConfig/;
 use Hash::Merge qw/merge/;
 use Path::Class qw/file/;
 
 use WWW::Analytics::MultiTouch::Tabular;
 
-our $VERSION = '0.13';
+our $VERSION = '0.32';
+
+my $client_id = "452786331228.apps.googleusercontent.com";
+my $client_secret = "ZNSff9Rzw0WS0I4M-F_8NUL7";
 
 my $default_header_colour = { bold => 1,
 			      color => 'white',
@@ -55,22 +58,24 @@ my %formatting_params = (
 sub new {
     my $class = shift;
 
-    my %params = validate(@_, { user => 1,
-				pass => 1,
-				id => 1,
-				event_category => { default => 'multitouch' },
-				fieldsep => { default => '!' },
-				recsep => { default => '*' },
-				patsep => { default => '-' },
-				debug => { default => 0 },
-				bugfix1 => { default => 0 },
-				channel_map => { type => HASHREF,
-						     default => {} },
-				date_format => { default => '%d %b %Y' },
-				time_format => { default => '%Y-%m-%d %H:%M:%S' },
-				ga_timezone => { default => 'UTC' },
-				report_timezone => { default => 'UTC' },
-				revenue_scale => { default => 1 },
+    my %params = validate(@_, { 
+        auth_token => 0,
+        refresh_token => 0,
+        auth_file => 0,
+        id => 1,
+        event_category => { default => 'multitouch' },
+        fieldsep => { default => '!' },
+        recsep => { default => '*' },
+        patsep => { default => '-' },
+        debug => { default => 0 },
+        bugfix1 => { default => 0 },
+        channel_map => { type => HASHREF,
+                         default => {} },
+        date_format => { default => '%d %b %Y' },
+        time_format => { default => '%Y-%m-%d %H:%M:%S' },
+        ga_timezone => { default => 'UTC' },
+        report_timezone => { default => 'UTC' },
+        revenue_scale => { default => 1 },
 			  });
     my $self = bless \%params, ref $class || $class;
 
@@ -84,16 +89,19 @@ sub get_data {
 			  });
 
     unless (exists $self->{analytics}) {
-	my $auth = Net::Google::AuthSub->new(service => 'analytics');
-	my $response = $auth->login($self->{user}, $self->{pass});
-
-	die "Login failed: " . $response->error . "\n" unless $response->is_success;
-
+        $self->{oauth} = Net::Google::Analytics::OAuth2->new(
+            client_id     => $client_id,
+            client_secret => $client_secret,
+            );
+        if (! $self->{refresh_token}) {
+            $self->authorise;
+        }
 	$self->{analytics} = Net::Google::Analytics->new();
-	$self->{analytics}->auth_params($auth->auth_params);
     }
-    my $data_feed = $self->{analytics}->data_feed;
-    my $req = $data_feed->new_request();
+    my $token = $self->{oauth}->refresh_access_token($self->{refresh_token});
+    $self->{analytics}->token($token);
+
+    my $req = $self->{analytics}->new_request();
     $req->ids("ga:" . $self->{id});
     $req->dimensions('ga:eventCategory,ga:eventAction,ga:eventLabel');
     $req->metrics('ga:totalEvents');
@@ -110,17 +118,15 @@ sub get_data {
 	$self->_debug("Processing $ga_ymd\n");
 	$req->start_date($ga_ymd);
 	$req->end_date($ga_ymd);
-	my $res = $data_feed->retrieve_paged($req);
-	die $res->message unless $res->is_success;
-	for my $entry (@{$res->entries}) {
-            my $dims = $entry->dimensions;
-            my %names = map { $dims->[$_]->name => $_ } (0 .. @$dims - 1);
-            my @events = $self->split_events($dims->[$names{'ga:eventLabel'}]->value);
+
+        my $res = $self->retrieve_paged($req);
+	for my $entry (@{$res->rows}) {
+            my @events = $self->split_events($entry->get('event_label'));
 
             # Keep event if within reporting time range (not GA time range)
             my $t = DateTime->from_epoch(epoch => $events[0][3])->set_time_zone($self->{report_timezone});
             if ($start_date <= $t && $t < $end_date) {
-                my ($key, $events) = $self->condition_entry($dims->[$names{'ga:eventAction'}]->value, \@events);
+                my ($key, $events) = $self->condition_entry($entry->get('event_action'), \@events);
                 $data{$key} = [ $ymd, @$events ] if $key;
             }
 	}
@@ -133,6 +139,47 @@ sub get_data {
     };
     $self->_debug(sub { Dumper($self->{current_data}) });
 }
+
+sub retrieve_paged {
+    my ($self, $req) = @_;
+
+    my $start_index = $req->start_index;
+    $start_index = 1 if !defined($start_index);
+    my $remaining_items = $req->max_results;
+    my $max_items_per_page = 10_000;
+    my $res;
+
+    while (!defined($remaining_items) || $remaining_items > 0) {
+        my $max_results =
+            defined($remaining_items) &&
+            $remaining_items < $max_items_per_page ?
+            $remaining_items : $max_items_per_page;
+
+        my $page = $self->{analytics}->retrieve($req, $start_index, $max_results);
+#        $self->_debug("Page data: " . Dumper($page));
+        if (! $page->is_success) {
+            die "There was a problem fetching analytics data.  Authorisation errors such as 'Forbidden' can occur if the Analytics ID you have specified is not accessible via the authorised Google account.\n Error reported was: " . $page->message;
+        }
+
+        if (!defined($res)) {
+            $res = $page;
+        }
+        else {
+            push(@{ $res->rows }, @{ $page->rows });
+        }
+
+        my $items_per_page = $page->items_per_page;
+        last if $page->total_results == 0 || $items_per_page < $max_results;
+
+        $remaining_items -= $items_per_page if defined($remaining_items);
+        $start_index     += $items_per_page;
+    }
+
+    $res->items_per_page(scalar(@{ $res->rows }));
+
+    return $res;
+}
+
 
 sub set_data {
     my $self = shift;
@@ -720,7 +767,7 @@ sub touchlist_report {
 		       ( [ $_->[0], $cf ], [ $self->_format_time($_->[1]), $cf ] ) } @$touchlist[3 .. @$touchlist - 1]
 	     ]);
     }
-    my $maxcols = max(map { 2 * ( @$_ - 3 ) } @{$self->{summary}{touchlist}});
+    my $maxcols = max(map { 2 * ( @$_ - 3 ) } @{$self->{summary}{touchlist}}) || 0;
     
     my %report = ( title => [ $params{title}, $params{title_format} ],
 		   sheetname => $params{sheetname},
@@ -929,7 +976,7 @@ sub process {
     my $class = shift;
     my $opts = shift;
 
-    my $mt = $class->new(_opts_subset($opts, qw/user pass id event_category fieldsep recsep patsep debug bugfix1 channel_map date_format time_format ga_timezone report_timezone revenue_scale/));
+    my $mt = $class->new(_opts_subset($opts, qw/id event_category fieldsep recsep patsep debug bugfix1 channel_map date_format time_format ga_timezone report_timezone revenue_scale auth_file refresh_token auth_token/));
 
     $mt->get_data(_opts_subset($opts, qw/start_date end_date/));
     $mt->summarise(_opts_subset($opts, qw/window_length single_order_model channel_pattern channel adjustments/));
@@ -972,6 +1019,32 @@ sub _format_time {
     return 'UNKNOWN';
 }
 
+sub authorise {
+    my $self = shift;
+
+    my $url = $self->{oauth}->authorize_url;
+
+    print(<<"EOF");
+Multitouch Analytics requires access to data from your Google Analytics account.
+
+Please visit the following URL, grant access to this application, and enter
+the code you will be shown:
+
+$url
+
+EOF
+
+print("Enter code: ");
+    my $code = <STDIN>;
+    chomp($code);
+
+    my $res = $self->{oauth}->get_access_token($code);
+
+    SaveConfig($self->{auth_file} || _default_auth_file(), 
+               { access_token => $res->{access_token},
+                 refresh_token => $res->{refresh_token}});
+    $self->{refresh_token} = $res->{refresh_token};
+}
 
 sub parse_config {
     my $class = shift;
@@ -997,7 +1070,22 @@ sub parse_config {
 
     $opts = merge($opts, \%file_opts);
 
+    $opts->{auth_file} ||= _default_auth_file($conf_file);
+    if (-f $opts->{auth_file}) {
+        my %auth_opts = ParseConfig(-ConfigFile => $opts->{auth_file});
+        $opts = merge($opts, \%auth_opts);
+    }
+
     return $opts;
+}
+
+sub _default_auth_file {
+    my $conf_file = shift || 'multitouchanalytics';
+
+    my (@parts) = grep { $_ } split(/\./, $conf_file);
+    pop(@parts) if @parts > 1;
+    push(@parts, 'auth');
+    return '.' . join('.', @parts);
 }
 
 sub _fix_array_keys {
@@ -1022,17 +1110,13 @@ WWW::Analytics::MultiTouch - Multi-touch web analytics, using Google Analytics
     use WWW::Analytics::MultiTouch;
 
     # Simple, all-in-one approach
-    WWW::Analytics::MultiTouch->process(user => $username, 
-                                        pass => $password, 
-                                        id => $analytics_id,
+    WWW::Analytics::MultiTouch->process(id => $analytics_id,
                                         start_date => '2010-01-01',
                                         end_date => '2010-02-01',
                                         filename => 'report.xls');
 
     # Or step by step
-    my $mt = WWW::Analytics::MultiTouch->new(user => $username, 
-                                              pass => $password, 
-                                              id => $analytics_id);
+    my $mt = WWW::Analytics::MultiTouch->new(id => $analytics_id);
     $mt->get_data(start_date => '2010-01-01',
                   end_date => '2010-02-01');
 
@@ -1074,6 +1158,12 @@ transactions = total transactions)
 
 =back
 
+=head1 GOOGLE ACCOUNT AUTHORISATION
+
+In order to give permission for the multitouch reporting to access your data, you must follow the authorisation process.  On first use, a URL will be displayed.  You must click on this URL or cut and paste it into a browser, log in as the Google user that has access to the Google Analytics profile that you wish to analyse, grant permission, and paste the resulting authorisation code into the console.  After this, the authorisation tokens will be stored and there should be no need to repeat the process.
+
+In case you need to change user or profile or re-authenticate, see the information on the L<auth_file> option.
+
 =head1 BASIC USAGE
 
 =head2 process
@@ -1085,7 +1175,7 @@ into one, i.e. it creates a WWW::Analytics::MultiTouch object, fetches data from
 the Google Analytics API, summarises the data and generates a report.
 
 Options available are all of the options for L<new>, L<get_data>, L<summarise>
-and L<report>.  Minimum options are user, pass, id, and typically start_date,
+and L<report>.  Minimum options are id, and typically start_date,
 end_date and filename.
 
 Typically the most time consuming part of the process is fetching the data from
@@ -1106,10 +1196,19 @@ Options are:
 
 =over 4
 
-=item * user, pass, id
+=item * id
 
-These are the Google Analytics username, password and reporting ID respectively.
-These parameters are mandatory.
+This is the Google Analytics reporting ID.  This parameter is mandatory.  This is NOT the ID that you use in the javascript code!  You can find the reporting id in the URL when you log into the Google Analytics console; it is the number following the letter 'p' in the URL, e.g.
+
+  https://www.google.com/analytics/web/#dashboard/default/a111111w222222p123456/
+
+In this example, the ID is 123456.
+
+=item * auth_file
+
+This is the file in which authentication keys received from Google are kept for subsequent use.  The default filename is derived from the configuration file (look for a file in the same directory as the configuration file ending in '.auth').  You may specify an alternative filename if you wish.  
+
+The auth_file will be created on initial usage when authorisation keys are received from Google.  If you need to change the Google username, or re-authorise the software for any other reason, delete the auth_file or specify an auth_file of a different name that does not exist.  Then the initial authorisation process will be repeated and a new auth_file will be created.
 
 =item * event_category
 

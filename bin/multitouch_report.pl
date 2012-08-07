@@ -12,8 +12,7 @@ my $opts = {
 };
 
 GetOptions($opts,
-	   'user=s',
-	   'pass=s',
+           'auth_file=s',
 	   'id=s',
 	   'event_category=s',
 	   'fieldsep=s',
@@ -62,20 +61,31 @@ multitouch_report.pl - MultiTouch Analytics Reporting
 
 =head1 SYNOPSIS
 
-multitouch_report --user=USERNAME --pass=PASSWORD --ID=ANALYTICSID --start_date=YYYYMMDD --end_date=YYYYMMDD --filename=FILENAME
+multitouch_report --ID=ANALYTICSID --start_date=YYYYMMDD --end_date=YYYYMMDD --filename=FILENAME
 
 =head1 DESCRIPTION
 
 Runs MultiTouch Analytics reports; see L<http://www.multitouchanalytics.com/> for details.
 
+=head1 GOOGLE ACCOUNT AUTHORISATION
+
+In order to give permission for the multitouch reporting to access your data, you must follow the authorisation process.  On first use, a URL will be displayed.  You must click on this URL or cut and paste it into a browser, log in as the Google user that has access to the Google Analytics profile that you wish to analyse, grant permission, and paste the resulting authorisation code into the console.  After this, the authorisation tokens will be stored and there should be no need to repeat the process.
+
+In case you need to change user or profile or re-authenticate, see the information on the L<--auth_file> option.
+
+NOTE: In versions prior to 0.30, it was necessary to specify a the username and password for your Google account. B<This is no longer necessary>.
+
 =head2 BASIC OPTIONS
 
 =over 4
 
-=item * --user=USERNAME, --pass=PASSWORD, --id=ANALYTICSID
+=item * --id=ANALYTICSID
 
-These are the Google Analytics username, password and reporting ID respectively.
-These parameters are mandatory.
+This is the Google Analytics reporting ID.  This parameter is mandatory.  This is NOT the ID that you use in the javascript code!  You can find the reporting id in the URL when you log into the Google Analytics console; it is the number following the letter 'p' in the URL, e.g.
+
+  https://www.google.com/analytics/web/#dashboard/default/a111111w222222p123456/
+
+In this example, the ID is 123456.
 
 =item * --start_date=YYYYMMDD, --end_date=YYYYMMDD
 
@@ -92,6 +102,12 @@ which can be xls, csv or txt.
 
 Specifies the name of a configuration file, through which any command line
 option can be specified, as well as many more advanced options.  See L<CONFIGURATION FILE>.
+
+=item * --auth_file=FILENAME
+
+This is the file in which authentication keys received from Google are kept for subsequent use.  The default filename is derived from the configuration file (look for a file in the same directory as the configuration file ending in '.auth').  You may specify an alternative filename if you wish.  
+
+The auth_file will be created on initial usage when authorisation keys are received from Google.  If you need to change the Google username, or re-authorise the software for any other reason, delete the auth_file or specify an auth_file of a different name that does not exist.  Then the initial authorisation process will be repeated and a new auth_file will be created.
 
 =back
 
@@ -232,8 +248,6 @@ advanced options that control the type and layout of the reports.
 
 The file format is L<Config::General>, per the following example:
 
-  user = mygoogleusername@mydomain.com
-  pass = *******
   id = 5555555
   ga_timezone = -1300
   report_timezone = UTC
