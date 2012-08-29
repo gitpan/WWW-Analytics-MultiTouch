@@ -15,7 +15,7 @@ use Path::Class qw/file/;
 
 use WWW::Analytics::MultiTouch::Tabular;
 
-our $VERSION = '0.33';
+our $VERSION = '0.34';
 
 my $client_id = "452786331228.apps.googleusercontent.com";
 my $client_secret = "ZNSff9Rzw0WS0I4M-F_8NUL7";
@@ -1051,29 +1051,40 @@ sub parse_config {
     my $opts = shift;
     my $conf_file = shift;
 
-    return $opts unless $conf_file;
-    die "Config file $conf_file does not exist or is not readable" unless -f $conf_file && -r $conf_file;
-
-    my %file_opts = ParseConfig(-ConfigFile => $conf_file, 
-				-AutoTrue => 1, 
-				-SplitPolicy => 'equalsign',
-				-UTF8 => 1,
-                                -InterPolateVars => 1,
-                                -InterPolateEnv => 1,
-                                -IncludeRelative => 1,
-                                -DefaultConfig => { 
-                                    cwd => file($conf_file)->dir->absolute->stringify,
-                                },
-        );
     Hash::Merge::set_behavior('RIGHT_PRECEDENT');
-    _fix_array_keys(\%file_opts, 'column_formats');
 
-    $opts = merge($opts, \%file_opts);
+    if ($conf_file) {
+        die "Config file $conf_file does not exist or is not readable" unless -f $conf_file && -r $conf_file;
+
+        my %file_opts = ParseConfig(-ConfigFile => $conf_file, 
+                                    -AutoTrue => 1, 
+                                    -SplitPolicy => 'equalsign',
+                                    -UTF8 => 1,
+                                    -InterPolateVars => 1,
+                                    -InterPolateEnv => 1,
+                                    -IncludeRelative => 1,
+                                    -DefaultConfig => { 
+                                        cwd => file($conf_file)->dir->absolute->stringify,
+                                    },
+            );
+        _fix_array_keys(\%file_opts, 'column_formats');
+
+        $opts = merge($opts, \%file_opts);
+    }
 
     $opts->{auth_file} ||= _default_auth_file($conf_file);
     if (-f $opts->{auth_file}) {
         my %auth_opts = ParseConfig(-ConfigFile => $opts->{auth_file});
         $opts = merge($opts, \%auth_opts);
+        if ($opts->{debug}) {
+            print "Opened auth_file $opts->{auth_file}\n";
+            open my $fh, '<', $opts->{auth_file} or die "Failed to open $opts->{auth_file}: $!";
+            local $/ = undef;
+            my $s = <$fh>;
+            close($fh);
+            print "Contents:\n$s\n";
+            print "Parsed content:\n" . Dumper(\%auth_opts);
+        }
     }
 
     return $opts;
