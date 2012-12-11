@@ -35,7 +35,8 @@ requires:
   Path::Class: 0
   Pod::Usage: 0
   Spreadsheet::WriteExcel: 2.37
+  Test::Deep: 0
   Test::More: 0
   Text::CSV_XS: 0.73
   Text::Table: 0
-version: 0.34
+version: 0.35

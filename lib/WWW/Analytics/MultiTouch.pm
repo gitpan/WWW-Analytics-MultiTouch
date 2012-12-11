@@ -15,7 +15,7 @@ use Path::Class qw/file/;
 
 use WWW::Analytics::MultiTouch::Tabular;
 
-our $VERSION = '0.34';
+our $VERSION = '0.35';
 
 my $client_id = "452786331228.apps.googleusercontent.com";
 my $client_secret = "ZNSff9Rzw0WS0I4M-F_8NUL7";

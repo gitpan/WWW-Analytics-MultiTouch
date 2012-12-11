@@ -14,6 +14,7 @@ WriteMakefile(
     EXE_FILES           => [ qw{bin/multitouch_report.pl} ],
     PREREQ_PM => {
         'Test::More' => 0,
+        'Test::Deep' => 0,
 	'Net::Google::Analytics' => 3.00,
 	'DateTime' => 0,
 	'DateTime::Duration' => 0,
