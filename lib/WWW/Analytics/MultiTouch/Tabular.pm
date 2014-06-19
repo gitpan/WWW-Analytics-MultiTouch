@@ -18,6 +18,7 @@ use Hash::Merge qw/merge/;
 use POSIX qw/floor/;
 use LWP::UserAgent;
 use File::Temp;
+use Encode;
 
 my %legal_name = map { $_ => 1 } qw/font size color bold italic underline font_strikeout font_script font_outline font_shadow num_format locked hidden align valign rotation text_wrap test_justlast center_across indent shrink pattern bg_color fg_color border bottom top left right border_color bottom_color top_color left_color right_color/;
 
@@ -153,6 +154,7 @@ sub xls
 	$tabcount++;
 	my $name = $tab->{'sheetname'} || "Sheet $tabcount";
 	$name = substr($name, 0, 31) if length($name) > 31;
+	$name = Encode::encode_utf8($name);
 	my $worksheet = $xls->add_worksheet($name);
 	$name = $worksheet->get_name(); # in case characters get altered
 	my $row = $self->{layout}->{start_row} || 0;

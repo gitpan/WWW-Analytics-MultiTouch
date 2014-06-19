@@ -15,7 +15,7 @@ use Path::Class qw/file/;
 
 use WWW::Analytics::MultiTouch::Tabular;
 
-our $VERSION = '0.35';
+our $VERSION = '0.36';
 
 my $client_id = "452786331228.apps.googleusercontent.com";
 my $client_secret = "ZNSff9Rzw0WS0I4M-F_8NUL7";
@@ -716,8 +716,7 @@ sub transactions_report {
     for my $rec (@summary) {
 	$channels{$_}++ for keys %{$rec->{touches}};
     }
-
-    my @channels = sort { $channels{$b} <=> $channels{$a} } keys %channels;
+    my @channels = sort { $channels{$b} <=> $channels{$a} || $b cmp $a } keys %channels;
     my @data = ( [ map { [ _map_header($_, $params{heading_map}), $params{column_heading_format} ] } ('', '', map { qw/Touches Transactions Revenue/ } @channels )] );
 
 

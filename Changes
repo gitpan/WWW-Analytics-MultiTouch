@@ -58,3 +58,5 @@ Revision history for WWW-Analytics-MultiTouch
 0.35    2012-12-11
         Adjusted tests to work with perl 5.17.6 (relaxed requirement on output sorting), rt.cpan.org #81877
 
+0.36	2014-06-19
+	Fixed XLS encoding problem on perl 5.16.

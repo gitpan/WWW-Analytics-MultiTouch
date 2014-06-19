@@ -34,15 +34,16 @@ my @reports = (
 			    [ 14, 15, "http://acme.com/日本語" ],
 			    [ 17, 18, "日本語"],
 			    ],
-		   },
+               },
 	       );
 
-for my $r (@reports) {
-    for my $row (@{$r->{data}}) {
+if ($^V lt v5.16.0) {
+    for my $r (@reports) {
+        for my $row (@{$r->{data}}) {
 	    $_ = decode_utf8($_) for @$row;
+        }
     }
 }
-
 my $dir = $FindBin::Bin;
 my $tab = WWW::Analytics::MultiTouch::Tabular->new({ format => 'txt', filename => "$dir/txt-test.txt" });
 ok($tab, "new txt");
@@ -92,6 +93,39 @@ SKIP: {
 	    }
 	}
     }
+
+    my @data = ([ 'Pie 1', 20 ],
+                [ 'Pie 2', 50 ],
+                [ 'Pie 3', 30 ]);
+    
+    my @reports2 = (
+        {
+            title => 'Test 3 Title',
+            sheetname => 'Test 3 Sheetname',
+            headings => [ qw/D E F/ ],
+            data => \@data,
+            chart => [ { type => 'pie',
+                         title => { 
+                                    name_formula => [0, 0],
+                         },
+                         abs_row => 0,
+                         abs_col => 8,
+                         x_scale => 1,
+                         y_scale => 1,
+                         series => [ 
+                             { categories => [ 1, 3, 0, 0 ],
+                               values => [ 1, 3, 1, 1 ],
+                               name_formula => [1, 0],
+                             } ],
+                       } ],
+
+        });
+
+    $tab->open("xls", "$dir/xls-test2.xls");
+    $tab->print(\@reports2);
+    $tab->close;
+
+
 }
 
 sub cmp_files {
